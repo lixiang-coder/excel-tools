@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch4jConfig>
+  <dontWrapJar>false</dontWrapJar>
+  <headerType>gui</headerType>
+  <jar>target/excel-processor-1.0-SNAPSHOT-jar-with-dependencies.jar</jar>
+  <outfile>ExcelProcessor.exe</outfile>
+  <errTitle>Excel Processor</errTitle>
+  <cmdLine></cmdLine>
+  <chdir>.</chdir>
+  <priority>normal</priority>
+  <downloadUrl>https://adoptium.net/</downloadUrl>
+  <supportUrl></supportUrl>
+  <stayAlive>false</stayAlive>
+  <restartOnCrash>false</restartOnCrash>
+  <manifest></manifest>
+  <jre>
+    <path></path>
+    <bundledJre64Bit>false</bundledJre64Bit>
+    <bundledJreAsFallback>false</bundledJreAsFallback>
+    <minVersion>1.8.0</minVersion>
+    <maxVersion></maxVersion>
+    <jdkPreference>preferJre</jdkPreference>
+    <runtimeBits>64/32</runtimeBits>
+  </jre>
+  <versionInfo>
+    <fileVersion>1.0.0.0</fileVersion>
+    <txtFileVersion>1.0.0.0</txtFileVersion>
+    <fileDescription>Excel Processor</fileDescription>
+    <copyright>Copyright © 2023</copyright>
+    <productVersion>1.0.0.0</productVersion>
+    <txtProductVersion>1.0.0.0</txtProductVersion>
+    <productName>Excel Processor</productName>
+    <companyName></companyName>
+    <internalName>ExcelProcessor</internalName>
+    <originalFilename>ExcelProcessor.exe</originalFilename>
+    <trademarks></trademarks>
+    <language>SIMPLIFIED_CHINESE</language>
+  </versionInfo>
+  <messages>
+    <startupErr>An error occurred while starting the application.</startupErr>
+    <jreNotFoundErr>This application requires a Java Runtime Environment.</jreNotFoundErr>
+    <jreVersionErr>This application requires a Java Runtime Environment</jreVersionErr>
+    <launcherErr>The registry refers to a nonexistent Java Runtime Environment installation or the runtime is corrupted.</launcherErr>
+  </messages>
+  <splash>
+    <timeout>60</timeout>
+    <timeoutErr>true</timeoutErr>
+  </splash>
+</launch4jConfig> 
