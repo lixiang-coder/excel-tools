@@ -7,6 +7,19 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.poi.util.IOUtils;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.xssf.eventusermodel.XSSFReader;
+import org.xml.sax.Attributes;
+import org.xml.sax.InputSource;
+import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.DefaultHandler;
+import org.xml.sax.helpers.XMLReaderFactory;
+import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
+import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXNotRecognizedException;
+import org.xml.sax.SAXNotSupportedException;
+import org.apache.poi.xssf.model.SharedStringsTable;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -15,6 +28,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.*;
 import java.util.List;
 
@@ -534,6 +548,138 @@ public class ExcelTools {
         });
     }
 
+    /**
+     * 使用SAX模式只读取Excel文件的表头行
+     */
+    private List<String> readHeadersOnly(File file) throws IOException {
+        if (file.getName().toLowerCase().endsWith(".xlsx")) {
+            return readXLSXHeaders(file);
+        } else {
+            return readXLSHeaders(file);
+        }
+    }
+
+    /**
+     * 使用SAX模式读取XLSX文件的表头
+     */
+    private List<String> readXLSXHeaders(File file) throws IOException {
+        List<String> headers = new ArrayList<>();
+        try (FileInputStream fis = new FileInputStream(file)) {
+            OPCPackage pkg = OPCPackage.open(fis);
+            XSSFReader reader = new XSSFReader(pkg);
+            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
+            SharedStringsTable sst = (SharedStringsTable) reader.getSharedStringsTable();
+            
+            if (it.hasNext()) {
+                InputStream sheet = it.next();
+                try {
+                    XMLReader parser = XMLReaderFactory.createXMLReader();
+                    try {
+                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
+                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
+                        logger.warn("设置XML解析器特性时出错: " + e.getMessage());
+                    }
+                    
+                    HeaderHandler handler = new HeaderHandler(sst);
+                    parser.setContentHandler(handler);
+                    parser.parse(new InputSource(sheet));
+                    headers = handler.getHeaders();
+                } catch (SAXException e) {
+                    throw new IOException("解析Excel文件时出错: " + e.getMessage(), e);
+                } finally {
+                    sheet.close();
+                }
+            }
+            pkg.close();
+        } catch (OpenXML4JException e) {
+            throw new IOException("打开Excel文件时出错: " + e.getMessage(), e);
+        }
+        return headers;
+    }
+
+    /**
+     * 读取XLS文件的表头
+     */
+    private List<String> readXLSHeaders(File file) throws IOException {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            Workbook workbook = WorkbookFactory.create(fis);
+            Sheet sheet = workbook.getSheetAt(0);
+            Row headerRow = sheet.getRow(0);
+            
+            List<String> headers = new ArrayList<>();
+            if (headerRow != null) {
+                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                    Cell cell = headerRow.getCell(i);
+                    if (cell != null) {
+                        headers.add(cell.getStringCellValue().trim());
+                    }
+                }
+            }
+            workbook.close();
+            return headers;
+        }
+    }
+
+    /**
+     * SAX处理器，用于解析XLSX文件的表头，支持共享字符串
+     */
+    private static class HeaderHandler extends DefaultHandler {
+        private final List<String> headers = new ArrayList<>();
+        private final SharedStringsTable sst;
+        private boolean isHeaderRow = true;
+        private String cellType = null;
+        private StringBuilder currentValue = new StringBuilder();
+        private boolean isCellValue = false;
+
+        public HeaderHandler(SharedStringsTable sst) {
+            this.sst = sst;
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName, Attributes attributes) {
+            if (isHeaderRow) {
+                if ("c".equals(qName)) {
+                    cellType = attributes.getValue("t");
+                    isCellValue = true;
+                }
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (isCellValue) {
+                currentValue.append(ch, start, length);
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            if (isHeaderRow) {
+                if ("c".equals(qName)) {
+                    isCellValue = false;
+                    String value = currentValue.toString().trim();
+                    if (!value.isEmpty()) {
+                        if ("s".equals(cellType) && sst != null) {
+                            int idx = Integer.parseInt(value);
+                            value = sst.getItemAt(idx).getString();
+                        }
+                        headers.add(value);
+                    }
+                    currentValue.setLength(0);
+                    cellType = null;
+                } else if ("row".equals(qName)) {
+                    isHeaderRow = false;
+                }
+            }
+        }
+
+        public List<String> getHeaders() {
+            return headers;
+        }
+    }
+
     private void loadHeaders(String inputFilePath, String templateFilePath) {
         // 创建进度对话框
         JDialog progressDialog = new JDialog(mainFrame, "加载表头", true);
@@ -544,7 +690,7 @@ public class ExcelTools {
         JPanel progressPanel = new JPanel(new BorderLayout(10, 10));
         progressPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        JLabel progressLabel = new JLabel("正在加载源数据和模板文件所有表头...");
+        JLabel progressLabel = new JLabel("正在加载表头...");
         JProgressBar progressBar = new JProgressBar();
         progressBar.setIndeterminate(true);
 
@@ -559,97 +705,35 @@ public class ExcelTools {
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
             @Override
             protected Void doInBackground() throws Exception {
-                // 加载源数据文件表头
-                try (FileInputStream fis = new FileInputStream(inputFilePath)) {
-                    // 使用WorkbookFactory来智能选择工作簿类型
-                    Workbook workbook = WorkbookFactory.create(fis);
-                    Sheet sheet = workbook.getSheetAt(0);
-                    Row headerRow = sheet.getRow(0);
-
-                    if (headerRow == null) {
-                        throw new IOException("源数据文件没有表头");
-                    }
-
-                    // 更新进度标签
+                try {
+                    // 加载源数据文件表头
                     SwingUtilities.invokeLater(() -> {
                         progressLabel.setText("正在加载源数据文件表头...");
-                        progressBar.setIndeterminate(false);
-                        progressBar.setValue(0);
                     });
 
-                    // 预分配容量以提高性能
-                    final DefaultListModel<String> tempModel = new DefaultListModel<>();
-                    int totalColumns = headerRow.getLastCellNum();
+                    List<String> sourceHeaders = readHeadersOnly(new File(inputFilePath));
 
-                    // 一次性读取所有表头
-                    for (int i = 0; i < totalColumns; i++) {
-                        Cell cell = headerRow.getCell(i);
-                        if (cell != null) {
-                            tempModel.addElement(cell.getStringCellValue().trim());
-                        }
-                    }
-
-                    // 更新进度
-                    SwingUtilities.invokeLater(() -> {
-                        progressBar.setValue(100);
-                        progressLabel.setText("正在加载源数据文件表头... 100%");
-                    });
-
-                    workbook.close();
-
-                    // 在EDT中更新UI
+                    // 更新源数据表头列表
                     SwingUtilities.invokeLater(() -> {
                         sourceListModel.clear();
-                        for (int i = 0; i < tempModel.getSize(); i++) {
-                            sourceListModel.addElement(tempModel.getElementAt(i));
+                        for (String header : sourceHeaders) {
+                            sourceListModel.addElement(header);
                         }
                         sourceList.repaint();
                     });
-                }
 
-                // 加载模板文件表头
-                try (FileInputStream fis = new FileInputStream(templateFilePath)) {
-                    // 使用WorkbookFactory来智能选择工作簿类型
-                    Workbook workbook = WorkbookFactory.create(fis);
-                    Sheet sheet = workbook.getSheetAt(0);
-                    Row headerRow = sheet.getRow(0);
-
-                    if (headerRow == null) {
-                        throw new IOException("模板文件没有表头");
-                    }
-
-                    // 更新进度标签
+                    // 加载模板文件表头
                     SwingUtilities.invokeLater(() -> {
                         progressLabel.setText("正在加载模板文件表头...");
-                        progressBar.setIndeterminate(false);
-                        progressBar.setValue(0);
                     });
 
-                    // 预分配容量以提高性能
-                    final DefaultListModel<String> tempModel = new DefaultListModel<>();
-                    int totalColumns = headerRow.getLastCellNum();
+                    List<String> templateHeaders = readHeadersOnly(new File(templateFilePath));
 
-                    // 一次性读取所有表头
-                    for (int i = 0; i < totalColumns; i++) {
-                        Cell cell = headerRow.getCell(i);
-                        if (cell != null) {
-                            tempModel.addElement(cell.getStringCellValue().trim());
-                        }
-                    }
-
-                    // 更新进度
-                    SwingUtilities.invokeLater(() -> {
-                        progressBar.setValue(100);
-                        progressLabel.setText("正在加载模板文件表头... 100%");
-                    });
-
-                    workbook.close();
-
-                    // 在EDT中更新UI
+                    // 更新模板表头列表
                     SwingUtilities.invokeLater(() -> {
                         templateListModel.clear();
-                        for (int i = 0; i < tempModel.getSize(); i++) {
-                            templateListModel.addElement(tempModel.getElementAt(i));
+                        for (String header : templateHeaders) {
+                            templateListModel.addElement(header);
                         }
                         templateList.repaint();
 
@@ -657,6 +741,9 @@ public class ExcelTools {
                         statusLabel.setText("已加载表头，请配置映射关系");
                         log("成功加载表头");
                     });
+
+                } catch (Exception e) {
+                    throw new IOException("加载表头失败: " + e.getMessage(), e);
                 }
                 return null;
             }
@@ -1169,10 +1256,15 @@ public class ExcelTools {
                                                     String value = getCellValueAsString(sourceCell);
                                                     if (!value.isEmpty()) {
                                                         if (mergedValue.length() > 0) {
-                                                            mergedValue.append(OTHER_REMARK_SEPARATOR);
+                                                            // 根据格式类型选择分隔符
+                                                            mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ? 
+                                                                "," : OTHER_REMARK_SEPARATOR);
                                                         }
-                                                        // 添加源表头名称
-                                                        mergedValue.append(sourceHeader).append("：").append(value);
+                                                        // 根据格式类型决定是否添加源表头名称
+                                                        if (mapping.getFormatType() == HeaderMapping.FormatType.PIPE_SEPARATED) {
+                                                            mergedValue.append(sourceHeader).append("：");
+                                                        }
+                                                        mergedValue.append(value);
                                                     }
                                                 }
                                             }
@@ -1332,10 +1424,19 @@ public class ExcelTools {
     public static class HeaderMapping {
         private final List<String> sourceHeaders;  // 源表头（表A）
         private final String targetHeader;         // 目标表头（表B）
+        private final FormatType formatType;       // 格式类型
+
+        public enum FormatType {
+            COMMA_SEPARATED,    // 使用逗号分隔，不显示源表头
+            PIPE_SEPARATED      // 使用竖线分隔，显示源表头
+        }
 
         public HeaderMapping(List<String> sourceHeaders, String targetHeader) {
             this.sourceHeaders = new ArrayList<>(sourceHeaders);
             this.targetHeader = targetHeader;
+            // 根据目标表头名称确定格式类型
+            this.formatType = targetHeader.equals("手机号码") ? 
+                FormatType.COMMA_SEPARATED : FormatType.PIPE_SEPARATED;
         }
 
         public List<String> getSourceHeaders() {
@@ -1348,6 +1449,10 @@ public class ExcelTools {
 
         public boolean isMerge() {
             return sourceHeaders.size() > 1;
+        }
+
+        public FormatType getFormatType() {
+            return formatType;
         }
     }
 
