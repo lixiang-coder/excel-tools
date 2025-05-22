@@ -1,36 +1,25 @@
 package com.xzy;
 
-import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.streaming.SXSSFSheet;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.poi.util.IOUtils;
+import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
-import org.xml.sax.Attributes;
-import org.xml.sax.InputSource;
-import org.xml.sax.XMLReader;
+import org.apache.poi.xssf.model.SharedStringsTable;
+import org.apache.poi.xssf.streaming.SXSSFSheet;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
 import org.xml.sax.helpers.XMLReaderFactory;
-import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
-import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
-import org.xml.sax.SAXException;
-import org.xml.sax.SAXNotRecognizedException;
-import org.xml.sax.SAXNotSupportedException;
-import org.apache.poi.xssf.model.SharedStringsTable;
-
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.*;
+import java.io.*;
 import java.util.List;
+import java.util.*;
 
 /**
  * 最终版
@@ -148,6 +137,11 @@ public class ExcelTools {
         selectFilesButton.setPreferredSize(new Dimension(100, 30));
         buttonPanel.add(selectFilesButton);
 
+        // 新增重新导入文件按钮
+        JButton reloadFilesButton = new JButton("重新导入文件");
+        reloadFilesButton.setPreferredSize(new Dimension(120, 30));
+        buttonPanel.add(reloadFilesButton);
+
         // 创建保存按钮
         JButton saveButton = new JButton("保存文件");
         saveButton.setPreferredSize(new Dimension(100, 30));
@@ -221,7 +215,7 @@ public class ExcelTools {
         panel.add(mappingConfigPanel, BorderLayout.CENTER);
 
         // 添加事件处理
-        addProcessorPanelEventHandlers(selectFilesButton, saveButton, addMappingButton, removeMappingButton);
+        addProcessorPanelEventHandlers(selectFilesButton, saveButton, addMappingButton, removeMappingButton, reloadFilesButton);
 
         // 初始化Excel处理器的映射数据结构
         processorMappings = new HashMap<>();
@@ -351,7 +345,8 @@ public class ExcelTools {
     }
 
     private void addProcessorPanelEventHandlers(JButton selectFilesButton, JButton saveButton,
-                                                JButton addMappingButton, JButton removeMappingButton) {
+                                                JButton addMappingButton, JButton removeMappingButton,
+                                                JButton reloadFilesButton) {
         // 添加选择文件按钮事件
         selectFilesButton.addActionListener(e -> {
             try {
@@ -386,6 +381,54 @@ public class ExcelTools {
                 log("选择文件失败: " + ex.getMessage());
                 JOptionPane.showMessageDialog(mainFrame,
                         "选择文件失败: " + ex.getMessage(),
+                        "错误",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        // 添加重新导入文件按钮事件
+        reloadFilesButton.addActionListener(e -> {
+            try {
+                // 重新选择文件
+                JFileChooser fileChooser = new JFileChooser();
+                fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+                fileChooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
+
+                // 选择源数据文件
+                fileChooser.setDialogTitle("选择源数据文件");
+                int result = fileChooser.showOpenDialog(mainFrame);
+                if (result != JFileChooser.APPROVE_OPTION) {
+                    return;
+                }
+                inputFilePath = fileChooser.getSelectedFile().getAbsolutePath();
+                log("已重新选择源数据文件: " + inputFilePath);
+
+                // 选择模板文件
+                fileChooser.setDialogTitle("选择模板文件");
+                result = fileChooser.showOpenDialog(mainFrame);
+                if (result != JFileChooser.APPROVE_OPTION) {
+                    return;
+                }
+                templateFilePath = fileChooser.getSelectedFile().getAbsolutePath();
+                log("已重新选择模板文件: " + templateFilePath);
+
+                // 加载表头
+                loadHeaders(inputFilePath, templateFilePath);
+
+                // 清空映射关系
+                processorMappings.clear();
+                processorMappingOrder.clear();
+                updateProcessorMappingList();
+
+                // 禁用保存按钮
+                saveButton.setEnabled(false);
+
+                statusLabel.setText("已重新导入文件，请重新配置映射关系");
+            } catch (Exception ex) {
+                logger.error("重新导入文件时发生错误", ex);
+                log("重新导入文件失败: " + ex.getMessage());
+                JOptionPane.showMessageDialog(mainFrame,
+                        "重新导入文件失败: " + ex.getMessage(),
                         "错误",
                         JOptionPane.ERROR_MESSAGE);
             }
@@ -569,7 +612,7 @@ public class ExcelTools {
             XSSFReader reader = new XSSFReader(pkg);
             XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
             SharedStringsTable sst = (SharedStringsTable) reader.getSharedStringsTable();
-            
+
             if (it.hasNext()) {
                 InputStream sheet = it.next();
                 try {
@@ -581,7 +624,7 @@ public class ExcelTools {
                     } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
                         logger.warn("设置XML解析器特性时出错: " + e.getMessage());
                     }
-                    
+
                     HeaderHandler handler = new HeaderHandler(sst);
                     parser.setContentHandler(handler);
                     parser.parse(new InputSource(sheet));
@@ -607,7 +650,7 @@ public class ExcelTools {
             Workbook workbook = WorkbookFactory.create(fis);
             Sheet sheet = workbook.getSheetAt(0);
             Row headerRow = sheet.getRow(0);
-            
+
             List<String> headers = new ArrayList<>();
             if (headerRow != null) {
                 for (int i = 0; i < headerRow.getLastCellNum(); i++) {
@@ -1257,7 +1300,7 @@ public class ExcelTools {
                                                     if (!value.isEmpty()) {
                                                         if (mergedValue.length() > 0) {
                                                             // 根据格式类型选择分隔符
-                                                            mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ? 
+                                                            mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ?
                                                                 "," : OTHER_REMARK_SEPARATOR);
                                                         }
                                                         // 根据格式类型决定是否添加源表头名称
@@ -1435,7 +1478,7 @@ public class ExcelTools {
             this.sourceHeaders = new ArrayList<>(sourceHeaders);
             this.targetHeader = targetHeader;
             // 根据目标表头名称确定格式类型
-            this.formatType = targetHeader.equals("手机号码") ? 
+            this.formatType = targetHeader.equals("手机号码") ?
                 FormatType.COMMA_SEPARATED : FormatType.PIPE_SEPARATED;
         }
 
