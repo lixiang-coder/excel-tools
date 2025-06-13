@@ -1122,10 +1122,16 @@ public class ExcelTools {
 
                                 // 在映射关系中查找对应的值
                                 String mappedValue = null;
-                                for (Map.Entry<String, String> entry : mappingRelations.entrySet()) {
-                                    if (entry.getValue().equals(lookupValue)) {
-                                        mappedValue = entry.getKey();
-                                        break;
+                                // 优先用key查找（即查找字段是key）
+                                if (mappingRelations.containsKey(lookupValue)) {
+                                    mappedValue = mappingRelations.get(lookupValue);
+                                } else {
+                                    // 否则遍历value查找key（兼容旧逻辑）
+                                    for (Map.Entry<String, String> entry : mappingRelations.entrySet()) {
+                                        if (entry.getValue().equals(lookupValue)) {
+                                            mappedValue = entry.getKey();
+                                            break;
+                                        }
                                     }
                                 }
 
