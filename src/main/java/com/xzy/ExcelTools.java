@@ -229,8 +229,8 @@ public class ExcelTools {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        // 创建按钮面板，使用GridLayout使两个按钮各占一半宽度
-        JPanel buttonPanel = new JPanel(new GridLayout(1, 2, 10, 0));
+        // 创建按钮面板，使用GridLayout使三个按钮各占一半宽度
+        JPanel buttonPanel = new JPanel(new GridLayout(1, 3, 10, 0));
 
         // 创建上传按钮
         JButton uploadButton = new JButton("上传关系表");
@@ -241,6 +241,11 @@ public class ExcelTools {
         JButton saveButton = new JButton("保存映射关系");
         saveButton.setPreferredSize(new Dimension(100, 30));
         buttonPanel.add(saveButton);
+
+        // 新增重置按钮
+        JButton resetButton = new JButton("重置映射关系");
+        resetButton.setPreferredSize(new Dimension(120, 30));
+        buttonPanel.add(resetButton);
 
         panel.add(buttonPanel, BorderLayout.NORTH);
 
@@ -283,6 +288,14 @@ public class ExcelTools {
 
         // 添加事件处理
         addMappingPanelEventHandlers(uploadButton, saveButton, sourceList, targetList);
+
+        // 新增重置按钮事件
+        resetButton.addActionListener(e -> {
+            mappingRelations.clear();
+            mappingListModel.clear();
+            statusLabel.setText("已重置映射关系");
+            log("已重置所有已保存的映射关系");
+        });
 
         return panel;
     }
