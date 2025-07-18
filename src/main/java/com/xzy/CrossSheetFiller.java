@@ -74,7 +74,16 @@ public class CrossSheetFiller {
                     }
                 }
             }
-            // 逐行比对：A表每主键去匹配B表所有主键，有则填充，无则跳过
+            // 优化：建立B表主键到所有行的映射
+            Map<String, java.util.List<Row>> bKeyToRows = new HashMap<>();
+            for (int j = 1; j <= outSheet.getLastRowNum(); j++) {
+                Row bRow = outSheet.getRow(j);
+                if (bRow == null) bRow = outSheet.createRow(j);
+                String bKey = cleanString(getCellValueAsString(bRow.getCell(bKeyIdx)));
+                if (bKey == null) continue;
+                bKeyToRows.computeIfAbsent(bKey, k -> new java.util.ArrayList<>()).add(bRow);
+            }
+            // 遍历A表，直接查找B表所有匹配行
             int total = aSheet.getLastRowNum();
             int cur = 0;
             for (int i = 1; i <= total; i++) {
@@ -84,15 +93,13 @@ public class CrossSheetFiller {
                 String aKey = cleanString(getCellValueAsString(aRow.getCell(aKeyIdx)));
                 String aVal = getCellValueAsString(aRow.getCell(aValIdx));
                 if (aKey == null || aKey.isEmpty()) continue;
-                for (int j = 1; j <= outSheet.getLastRowNum(); j++) {
-                    Row bRow = outSheet.getRow(j);
-                    if (bRow == null) bRow = outSheet.createRow(j);
-                    String bKey = cleanString(getCellValueAsString(bRow.getCell(bKeyIdx)));
-                    if (aKey.equalsIgnoreCase(bKey)) {
+                java.util.List<Row> bRows = bKeyToRows.get(aKey);
+                if (bRows != null) {
+                    for (Row bRow : bRows) {
                         Cell cell = bRow.getCell(bValIdx);
                         if (cell == null) cell = bRow.createCell(bValIdx);
                         cell.setCellValue(aVal);
-                        System.out.println("填充: A主键:" + aKey + " -> B表行:" + (j + 1) + "，值:" + aVal);
+                        System.out.println("填充: A主键:" + aKey + " -> B表行:" + (bRow.getRowNum() + 1) + "，值:" + aVal);
                     }
                 }
                 if (progressListener != null && (cur % 100 == 0 || cur == total)) {
