@@ -206,7 +206,7 @@ public class CrossSheetFiller {
     /**
      * 读取Excel文件的表头（首行）
      */
-    private java.util.List<String> readHeadersOnly(File file) throws IOException {
+    public java.util.List<String> readHeadersOnly(File file) throws IOException {
         if (file.getName().toLowerCase().endsWith(".xlsx")) {
             return readXLSXHeaders(file);
         } else {
@@ -232,37 +232,6 @@ public class CrossSheetFiller {
     private java.util.List<String> readXLSHeaders(File file) throws IOException {
         // xls和xlsx都可以用WorkbookFactory.create读取
         return readXLSXHeaders(file);
-    }
-
-    // 统一进度条弹窗创建方法
-    private static JDialog createProgressDialog(JFrame parent, String title, String message, boolean indeterminate, JProgressBar[] progressBarHolder, JLabel[] percentLabelHolder) {
-        JDialog dialog = new JDialog(parent, title, true);
-        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        dialog.setResizable(false);
-        dialog.setUndecorated(false);
-        JPanel panel = new JPanel(new BorderLayout(10, 5));
-        panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
-        JPanel msgPanel = new JPanel(new BorderLayout());
-        JLabel msgLabel = new JLabel(message);
-        msgLabel.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
-        JLabel percentLabel = new JLabel(indeterminate ? "" : "0%");
-        percentLabel.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
-        percentLabel.setHorizontalAlignment(SwingConstants.RIGHT);
-        msgPanel.add(msgLabel, BorderLayout.WEST);
-        msgPanel.add(percentLabel, BorderLayout.EAST);
-        JProgressBar progressBar = new JProgressBar();
-        progressBar.setIndeterminate(indeterminate);
-        progressBar.setStringPainted(false);
-        progressBar.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
-        progressBar.setForeground(Color.GREEN);
-        panel.add(msgPanel, BorderLayout.NORTH);
-        panel.add(progressBar, BorderLayout.CENTER);
-        dialog.add(panel);
-        dialog.pack();
-        dialog.setLocationRelativeTo(parent);
-        if (progressBarHolder != null && progressBarHolder.length > 0) progressBarHolder[0] = progressBar;
-        if (percentLabelHolder != null && percentLabelHolder.length > 0) percentLabelHolder[0] = percentLabel;
-        return dialog;
     }
 
     /**
@@ -629,5 +598,36 @@ public class CrossSheetFiller {
             });
             frame.setVisible(true);
         });
+    }
+
+    // 统一进度条弹窗创建方法
+    private static JDialog createProgressDialog(JFrame parent, String title, String message, boolean indeterminate, JProgressBar[] progressBarHolder, JLabel[] percentLabelHolder) {
+        JDialog dialog = new JDialog(parent, title, true);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.setResizable(false);
+        dialog.setUndecorated(false);
+        JPanel panel = new JPanel(new BorderLayout(10, 5));
+        panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
+        JPanel msgPanel = new JPanel(new BorderLayout());
+        JLabel msgLabel = new JLabel(message);
+        msgLabel.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
+        JLabel percentLabel = new JLabel(indeterminate ? "" : "0%");
+        percentLabel.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
+        percentLabel.setHorizontalAlignment(SwingConstants.RIGHT);
+        msgPanel.add(msgLabel, BorderLayout.WEST);
+        msgPanel.add(percentLabel, BorderLayout.EAST);
+        JProgressBar progressBar = new JProgressBar();
+        progressBar.setIndeterminate(indeterminate);
+        progressBar.setStringPainted(false);
+        progressBar.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
+        progressBar.setForeground(Color.GREEN);
+        panel.add(msgPanel, BorderLayout.NORTH);
+        panel.add(progressBar, BorderLayout.CENTER);
+        dialog.add(panel);
+        dialog.pack();
+        dialog.setLocationRelativeTo(parent);
+        if (progressBarHolder != null && progressBarHolder.length > 0) progressBarHolder[0] = progressBar;
+        if (percentLabelHolder != null && percentLabelHolder.length > 0) percentLabelHolder[0] = percentLabel;
+        return dialog;
     }
 }

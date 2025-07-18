@@ -149,7 +149,7 @@ public class DuplicateColumnMerger {
     /**
      * 读取Excel文件的表头（首行）
      */
-    private java.util.List<String> readHeadersOnly(File file) throws IOException {
+    public java.util.List<String> readHeadersOnly(File file) throws IOException {
         if (file.getName().toLowerCase().endsWith(".xlsx")) {
             return readXLSXHeaders(file);
         } else {
@@ -176,6 +176,7 @@ public class DuplicateColumnMerger {
         // xls和xlsx都可以用WorkbookFactory.create读取
         return readXLSXHeaders(file);
     }
+    // 删除 createPanel 及相关 UI 代码，只保留 mergeByKeyColumn、mergeByCustomerIdWithProgress、main 及数据处理方法
     // 统一进度条弹窗创建方法
     private static JDialog createProgressDialog(JFrame parent, String title, String message, boolean indeterminate, JProgressBar[] progressBarHolder, JLabel[] percentLabelHolder) {
         JDialog dialog = new JDialog(parent, title, true);
