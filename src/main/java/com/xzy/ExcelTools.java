@@ -1625,6 +1625,8 @@ public class ExcelTools {
         gbc.weightx = 1;
         JTextField aPath = new JTextField();
         JTextField bPath = new JTextField();
+        aPath.setEditable(false);
+        bPath.setEditable(false);
         JButton selA = new JButton("选择源表");
         JButton selB = new JButton("选择目标表");
         java.awt.Font btnFont = new java.awt.Font("Microsoft YaHei", java.awt.Font.BOLD, 16);
