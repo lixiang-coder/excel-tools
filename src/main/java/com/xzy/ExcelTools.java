@@ -1734,11 +1734,9 @@ public class ExcelTools {
         mapPanel.add(bValCombo, gbc);
 
         JPanel opPanel = new JPanel(new BorderLayout(10, 10));
+        // 修改开始填充按钮样式为默认
         JButton runBtn = new JButton("开始填充");
-        runBtn.setFont(new java.awt.Font("Microsoft YaHei", java.awt.Font.BOLD, 18));
-        runBtn.setBackground(new java.awt.Color(66, 133, 244));
-        runBtn.setForeground(java.awt.Color.WHITE);
-        runBtn.setFocusPainted(false);
+        // 不设置 setFont、setBackground、setForeground、setFocusPainted、setOpaque 等，仅保留默认样式
         opPanel.add(runBtn, BorderLayout.CENTER);
 
         JPanel mainPanel = new JPanel();
