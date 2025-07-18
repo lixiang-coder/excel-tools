@@ -6,9 +6,16 @@ import org.apache.poi.util.IOUtils;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
-import java.awt.*;
+import java.awt.Font;
+import java.awt.Dimension;
+import java.awt.Insets;
+import java.awt.GridBagLayout;
+import java.awt.GridLayout;
+import java.awt.BorderLayout;
+import java.awt.GridBagConstraints;
 import java.io.*;
 import java.util.*;
+import java.awt.Color;
 
 /**
  * Curosr 实现
@@ -20,14 +27,14 @@ public class CrossSheetFiller {
      * 执行跨表主键数据填充（带进度监听）
      */
     public void fill(String aPath, String bPath, String outputPath,
-                     String aKeyHeader, String bKeyHeader,
-                     String aValueHeader, String bValueHeader,
+                     String aKeyHeader, String aValueHeader,
+                     String bKeyHeader, String bValueHeader,
                      ProgressListener progressListener) throws IOException {
         File aFile = new File(aPath);
         File bFile = new File(bPath);
         File outFile = new File(outputPath);
-        if (!aFile.exists() || !aFile.canRead()) throw new IOException("无法读取A表: " + aPath);
-        if (!bFile.exists() || !bFile.canRead()) throw new IOException("无法读取B表: " + bPath);
+        if (!aFile.exists() || !aFile.canRead()) throw new IOException("无法读取源表: " + aPath);
+        if (!bFile.exists() || !bFile.canRead()) throw new IOException("无法读取目标表: " + bPath);
         File outDir = outFile.getParentFile();
         if (outDir != null && !outDir.exists()) {
             if (!outDir.mkdirs()) throw new IOException("无法创建输出目录: " + outDir.getAbsolutePath());
@@ -42,25 +49,35 @@ public class CrossSheetFiller {
              FileOutputStream fos = new FileOutputStream(outFile)) {
             Sheet aSheet = aWb.getSheetAt(0);
             Sheet bSheet = bWb.getSheetAt(0);
-            if (aSheet == null || bSheet == null) throw new IOException("A表或B表无数据");
+            if (aSheet == null || bSheet == null) throw new IOException("源表或目标表无数据");
             Row aHeaderRow = aSheet.getRow(0);
             Row bHeaderRow = bSheet.getRow(0);
-            if (aHeaderRow == null || bHeaderRow == null) throw new IOException("A表或B表无表头");
-            int aKeyIdx = -1, aValIdx = -1;
-            int bKeyIdx = -1, bValIdx = -1;
+            if (aHeaderRow == null || bHeaderRow == null) throw new IOException("源表或目标表无表头");
+            // ---增强容错：建立表头容错Map---
+            Map<String, Integer> aHeaderMap = new HashMap<>();
             for (int i = 0; i < aHeaderRow.getLastCellNum(); i++) {
                 String h = getCellValueAsString(aHeaderRow.getCell(i));
-                if (h != null && cleanString(h).equalsIgnoreCase(cleanString(aKeyHeader))) aKeyIdx = i;
-                if (h != null && cleanString(h).equalsIgnoreCase(cleanString(aValueHeader))) aValIdx = i;
+                if (h != null) aHeaderMap.put(cleanString(h).toLowerCase(), i);
             }
+            Map<String, Integer> bHeaderMap = new HashMap<>();
             for (int i = 0; i < bHeaderRow.getLastCellNum(); i++) {
                 String h = getCellValueAsString(bHeaderRow.getCell(i));
-                if (h != null && cleanString(h).equalsIgnoreCase(cleanString(bKeyHeader))) bKeyIdx = i;
-                if (h != null && cleanString(h).equalsIgnoreCase(cleanString(bValueHeader))) bValIdx = i;
+                if (h != null) bHeaderMap.put(cleanString(h).toLowerCase(), i);
             }
-            if (aKeyIdx == -1 || aValIdx == -1 || bKeyIdx == -1 || bValIdx == -1)
-                throw new IOException("表头映射有误，请检查");
-            // 复制B表到输出表，始终创建每一行
+            int aKeyIdx = aHeaderMap.getOrDefault(cleanString(aKeyHeader).toLowerCase(), -1);
+            int aValIdx = aHeaderMap.getOrDefault(cleanString(aValueHeader).toLowerCase(), -1);
+            int bKeyIdx = bHeaderMap.getOrDefault(cleanString(bKeyHeader).toLowerCase(), -1);
+            int bValIdx = bHeaderMap.getOrDefault(cleanString(bValueHeader).toLowerCase(), -1);
+            // ---友好报错---
+            if (aKeyIdx == -1)
+                throw new IOException("源表未找到主键表头: " + aKeyHeader + "（已自动忽略空格和大小写）");
+            if (aValIdx == -1)
+                throw new IOException("源表未找到数据表头: " + aValueHeader + "（已自动忽略空格和大小写）");
+            if (bKeyIdx == -1)
+                throw new IOException("目标表未找到主键表头: " + bKeyHeader + "（已自动忽略空格和大小写）");
+            if (bValIdx == -1)
+                throw new IOException("目标表未找到目标表头: " + bValueHeader + "（已自动忽略空格和大小写）");
+            // 复制目标表到输出表，始终创建每一行
             Sheet outSheet = outWb.createSheet("Sheet1");
             for (int i = 0; i <= bSheet.getLastRowNum(); i++) {
                 Row src = bSheet.getRow(i);
@@ -74,7 +91,7 @@ public class CrossSheetFiller {
                     }
                 }
             }
-            // 优化：建立B表主键到所有行的映射
+            // 优化：建立目标表主键到所有行的映射
             Map<String, java.util.List<Row>> bKeyToRows = new HashMap<>();
             for (int j = 1; j <= outSheet.getLastRowNum(); j++) {
                 Row bRow = outSheet.getRow(j);
@@ -83,7 +100,7 @@ public class CrossSheetFiller {
                 if (bKey == null) continue;
                 bKeyToRows.computeIfAbsent(bKey, k -> new java.util.ArrayList<>()).add(bRow);
             }
-            // 遍历A表，直接查找B表所有匹配行
+            // 遍历源表，直接查找目标表所有匹配行
             int total = aSheet.getLastRowNum();
             int cur = 0;
             for (int i = 1; i <= total; i++) {
@@ -99,7 +116,7 @@ public class CrossSheetFiller {
                         Cell cell = bRow.getCell(bValIdx);
                         if (cell == null) cell = bRow.createCell(bValIdx);
                         cell.setCellValue(aVal);
-                        System.out.println("填充: A主键:" + aKey + " -> B表行:" + (bRow.getRowNum() + 1) + "，值:" + aVal);
+                        System.out.println("填充: 源表主键:" + aKey + " -> 目标表行:" + (bRow.getRowNum() + 1) + "，值:" + aVal);
                     }
                 }
                 if (progressListener != null && (cur % 100 == 0 || cur == total)) {
@@ -187,6 +204,68 @@ public class CrossSheetFiller {
     }
 
     /**
+     * 读取Excel文件的表头（首行）
+     */
+    private java.util.List<String> readHeadersOnly(File file) throws IOException {
+        if (file.getName().toLowerCase().endsWith(".xlsx")) {
+            return readXLSXHeaders(file);
+        } else {
+            return readXLSHeaders(file);
+        }
+    }
+    private java.util.List<String> readXLSXHeaders(File file) throws IOException {
+        java.util.List<String> headers = new java.util.ArrayList<>();
+        try (FileInputStream fis = new FileInputStream(file); Workbook workbook = WorkbookFactory.create(fis)) {
+            Sheet sheet = workbook.getSheetAt(0);
+            Row headerRow = sheet.getRow(0);
+            if (headerRow != null) {
+                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                    Cell cell = headerRow.getCell(i);
+                    if (cell != null) {
+                        headers.add(cell.getStringCellValue().trim());
+                    }
+                }
+            }
+        }
+        return headers;
+    }
+    private java.util.List<String> readXLSHeaders(File file) throws IOException {
+        // xls和xlsx都可以用WorkbookFactory.create读取
+        return readXLSXHeaders(file);
+    }
+
+    // 统一进度条弹窗创建方法
+    private static JDialog createProgressDialog(JFrame parent, String title, String message, boolean indeterminate, JProgressBar[] progressBarHolder, JLabel[] percentLabelHolder) {
+        JDialog dialog = new JDialog(parent, title, true);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.setResizable(false);
+        dialog.setUndecorated(false);
+        JPanel panel = new JPanel(new BorderLayout(10, 5));
+        panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
+        JPanel msgPanel = new JPanel(new BorderLayout());
+        JLabel msgLabel = new JLabel(message);
+        msgLabel.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
+        JLabel percentLabel = new JLabel(indeterminate ? "" : "0%");
+        percentLabel.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
+        percentLabel.setHorizontalAlignment(SwingConstants.RIGHT);
+        msgPanel.add(msgLabel, BorderLayout.WEST);
+        msgPanel.add(percentLabel, BorderLayout.EAST);
+        JProgressBar progressBar = new JProgressBar();
+        progressBar.setIndeterminate(indeterminate);
+        progressBar.setStringPainted(false);
+        progressBar.setFont(new Font("Microsoft YaHei", Font.PLAIN, 15));
+        progressBar.setForeground(Color.GREEN);
+        panel.add(msgPanel, BorderLayout.NORTH);
+        panel.add(progressBar, BorderLayout.CENTER);
+        dialog.add(panel);
+        dialog.pack();
+        dialog.setLocationRelativeTo(parent);
+        if (progressBarHolder != null && progressBarHolder.length > 0) progressBarHolder[0] = progressBar;
+        if (percentLabelHolder != null && percentLabelHolder.length > 0) percentLabelHolder[0] = percentLabel;
+        return dialog;
+    }
+
+    /**
      * 命令行/交互入口
      */
     public static void main(String[] args) {
@@ -196,9 +275,19 @@ public class CrossSheetFiller {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
             }
+            // 设置全局字体
+            java.awt.Font uiFont = new java.awt.Font("Microsoft YaHei", java.awt.Font.PLAIN, 16);
+            java.util.Enumeration<Object> keys = UIManager.getDefaults().keys();
+            while (keys.hasMoreElements()) {
+                Object key = keys.nextElement();
+                Object value = UIManager.get(key);
+                if (value instanceof Font) {
+                    UIManager.put(key, uiFont);
+                }
+            }
             JFrame frame = new JFrame("跨表头填充工具");
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-            frame.setSize(600, 400);
+            frame.setSize(900, 600);
             frame.setLocationRelativeTo(null);
             frame.setLayout(new BorderLayout(10, 10));
 
@@ -206,21 +295,64 @@ public class CrossSheetFiller {
             JPanel filePanel = new JPanel(new GridBagLayout());
             filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
             GridBagConstraints gbc = new GridBagConstraints();
-            gbc.insets = new Insets(5, 5, 5, 5);
+            gbc.insets = new Insets(8, 8, 8, 8);
             gbc.fill = GridBagConstraints.HORIZONTAL;
             gbc.weightx = 1;
 
             JTextField aPath = new JTextField();
             JTextField bPath = new JTextField();
             JTextField outPath = new JTextField();
-            JButton selA = new JButton("选择A表");
-            JButton selB = new JButton("选择B表");
+            aPath.setEditable(false);
+            bPath.setEditable(false);
+            outPath.setEditable(false);
+            JButton selA = new JButton("选择源表");
+            JButton selB = new JButton("选择目标表");
             JButton selOut = new JButton("选择输出");
+            // 优化按钮字体和边框
+            java.awt.Font btnFont = new java.awt.Font("Microsoft YaHei", java.awt.Font.BOLD, 16);
+            selA.setFont(btnFont);
+            selB.setFont(btnFont);
+            selOut.setFont(btnFont);
+            // 去除蓝色边框，使用无边框风格
+            selA.setBorderPainted(false);
+            selB.setBorderPainted(false);
+            selOut.setBorderPainted(false);
+            selA.setFocusPainted(false);
+            selB.setFocusPainted(false);
+            selOut.setFocusPainted(false);
+            // 让按钮文字始终可见
+            selA.setOpaque(true);
+            selB.setOpaque(true);
+            selOut.setOpaque(true);
+            // 按钮可用/不可用时颜色
+            java.awt.Color blue = new java.awt.Color(66, 133, 244);
+            java.awt.Color grayBg = new java.awt.Color(220, 220, 220);
+            java.awt.Color grayFont = new java.awt.Color(120, 120, 120);
+            // 工具方法：视觉禁用/启用按钮
+            java.util.function.BiConsumer<JButton, Boolean> setButtonVisualEnabled = (btn, enabled) -> {
+                if (enabled) {
+                    btn.setBackground(blue);
+                    btn.setForeground(Color.WHITE);
+                } else {
+                    btn.setBackground(grayBg);
+                    btn.setForeground(grayFont);
+                }
+                btn.setBorder(BorderFactory.createEmptyBorder());
+                btn.setFocusPainted(false);
+                btn.setOpaque(true);
+            };
+            // 按钮视觉和逻辑禁用控制
+            final boolean[] isSelAEnabled = {true};
+            final boolean[] isSelBEnabled = {true};
+            final boolean[] isSelOutEnabled = {true};
+            setButtonVisualEnabled.accept(selA, true);
+            setButtonVisualEnabled.accept(selB, true);
+            setButtonVisualEnabled.accept(selOut, true);
 
             gbc.gridx = 0;
             gbc.gridy = 0;
             gbc.gridwidth = 1;
-            filePanel.add(new JLabel("A表路径:"), gbc);
+            filePanel.add(new JLabel("源表路径:"), gbc);
             gbc.gridx = 1;
             gbc.gridy = 0;
             gbc.gridwidth = 2;
@@ -232,7 +364,7 @@ public class CrossSheetFiller {
             gbc.gridx = 0;
             gbc.gridy = 1;
             gbc.gridwidth = 1;
-            filePanel.add(new JLabel("B表路径:"), gbc);
+            filePanel.add(new JLabel("目标表路径:"), gbc);
             gbc.gridx = 1;
             gbc.gridy = 1;
             gbc.gridwidth = 2;
@@ -254,77 +386,191 @@ public class CrossSheetFiller {
             gbc.gridwidth = 1;
             filePanel.add(selOut, gbc);
 
+            // 表头展示区
+            JPanel headerPanel = new JPanel(new GridLayout(2, 1, 5, 5));
+            headerPanel.setBorder(BorderFactory.createTitledBorder("表头展示区"));
+            JTextArea aHeadersArea = new JTextArea(2, 40);
+            aHeadersArea.setEditable(false);
+            aHeadersArea.setLineWrap(true);
+            aHeadersArea.setBorder(BorderFactory.createTitledBorder("源表表头"));
+            JScrollPane aHeadersScroll = new JScrollPane(aHeadersArea);
+            JTextArea bHeadersArea = new JTextArea(2, 40);
+            bHeadersArea.setEditable(false);
+            bHeadersArea.setLineWrap(true);
+            bHeadersArea.setBorder(BorderFactory.createTitledBorder("目标表表头"));
+            JScrollPane bHeadersScroll = new JScrollPane(bHeadersArea);
+            headerPanel.add(aHeadersScroll);
+            headerPanel.add(bHeadersScroll);
+
             // 表头映射区
             JPanel mapPanel = new JPanel(new GridBagLayout());
             mapPanel.setBorder(BorderFactory.createTitledBorder("表头映射区"));
-            JTextField aKey = new JTextField();
-            JTextField bKey = new JTextField();
-            JTextField aVal = new JTextField();
-            JTextField bVal = new JTextField();
+            JComboBox<String> aKeyCombo = new JComboBox<>();
+            JComboBox<String> aValCombo = new JComboBox<>();
+            JComboBox<String> bKeyCombo = new JComboBox<>();
+            JComboBox<String> bValCombo = new JComboBox<>();
+            aKeyCombo.setFont(uiFont);
+            aValCombo.setFont(uiFont);
+            bKeyCombo.setFont(uiFont);
+            bValCombo.setFont(uiFont);
+            aKeyCombo.setPreferredSize(new Dimension(180, 32));
+            aValCombo.setPreferredSize(new Dimension(180, 32));
+            bKeyCombo.setPreferredSize(new Dimension(180, 32));
+            bValCombo.setPreferredSize(new Dimension(180, 32));
             gbc.gridx = 0;
             gbc.gridy = 0;
             gbc.gridwidth = 1;
-            mapPanel.add(new JLabel("A表主键表头:"), gbc);
+            mapPanel.add(new JLabel("源表匹配表头:"), gbc);
             gbc.gridx = 1;
             gbc.gridy = 0;
-            gbc.gridwidth = 3;
-            mapPanel.add(aKey, gbc);
+            mapPanel.add(aKeyCombo, gbc);
+            gbc.gridx = 2;
+            gbc.gridy = 0;
+            mapPanel.add(new JLabel("源表数据表头:"), gbc);
+            gbc.gridx = 3;
+            gbc.gridy = 0;
+            mapPanel.add(aValCombo, gbc);
             gbc.gridx = 0;
             gbc.gridy = 1;
-            gbc.gridwidth = 1;
-            mapPanel.add(new JLabel("B表主键表头:"), gbc);
+            mapPanel.add(new JLabel("目标表匹配表头:"), gbc);
             gbc.gridx = 1;
             gbc.gridy = 1;
-            gbc.gridwidth = 3;
-            mapPanel.add(bKey, gbc);
-            gbc.gridx = 0;
-            gbc.gridy = 2;
-            gbc.gridwidth = 1;
-            mapPanel.add(new JLabel("A表数据表头:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 2;
-            gbc.gridwidth = 3;
-            mapPanel.add(aVal, gbc);
-            gbc.gridx = 0;
-            gbc.gridy = 3;
-            gbc.gridwidth = 1;
-            mapPanel.add(new JLabel("B表目标表头:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 3;
-            gbc.gridwidth = 3;
-            mapPanel.add(bVal, gbc);
+            mapPanel.add(bKeyCombo, gbc);
+            gbc.gridx = 2;
+            gbc.gridy = 1;
+            mapPanel.add(new JLabel("目标表填充表头:"), gbc);
+            gbc.gridx = 3;
+            gbc.gridy = 1;
+            mapPanel.add(bValCombo, gbc);
 
             // 操作区
             JPanel opPanel = new JPanel(new BorderLayout(10, 10));
             JButton runBtn = new JButton("开始填充");
+            runBtn.setFont(new java.awt.Font("Microsoft YaHei", java.awt.Font.BOLD, 18));
+            runBtn.setBackground(new java.awt.Color(66, 133, 244));
+            runBtn.setForeground(java.awt.Color.WHITE);
+            runBtn.setFocusPainted(false);
             JLabel status = new JLabel("就绪");
             status.setHorizontalAlignment(SwingConstants.CENTER);
+            status.setFont(new java.awt.Font("Microsoft YaHei", java.awt.Font.PLAIN, 16));
             opPanel.add(runBtn, BorderLayout.CENTER);
             opPanel.add(status, BorderLayout.SOUTH);
 
             // 主布局
-            JPanel centerPanel = new JPanel();
-            centerPanel.setLayout(new BoxLayout(centerPanel, BoxLayout.Y_AXIS));
-            centerPanel.add(filePanel);
-            centerPanel.add(Box.createVerticalStrut(10));
-            centerPanel.add(mapPanel);
-            frame.add(centerPanel, BorderLayout.CENTER);
-            frame.add(opPanel, BorderLayout.SOUTH);
+            JPanel mainPanel = new JPanel();
+            mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
+            mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+            mainPanel.add(filePanel);
+            mainPanel.add(Box.createVerticalStrut(10));
+            mainPanel.add(headerPanel);
+            mainPanel.add(Box.createVerticalStrut(10));
+            mainPanel.add(mapPanel);
+            mainPanel.add(Box.createVerticalStrut(10));
+            mainPanel.add(opPanel);
+            frame.add(mainPanel, BorderLayout.CENTER);
 
             // 事件
             selA.addActionListener(e -> {
+                if (!isSelAEnabled[0]) return;
                 JFileChooser fc = new JFileChooser();
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION)
+                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
                     aPath.setText(fc.getSelectedFile().getAbsolutePath());
+                    // 统一进度条弹窗
+                    JProgressBar[] progressBarHolder = new JProgressBar[1];
+                    JLabel[] percentLabelHolder = new JLabel[1];
+                    JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载源表表头，请稍候...", true, progressBarHolder, percentLabelHolder);
+                    SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+                        @Override
+                        protected Void doInBackground() throws Exception {
+                            try {
+                                java.util.List<String> headers = new CrossSheetFiller().readHeadersOnly(new File(aPath.getText()));
+                                SwingUtilities.invokeLater(() -> {
+                                    aHeadersArea.setText(String.join(", ", headers));
+                                    aKeyCombo.removeAllItems();
+                                    aValCombo.removeAllItems();
+                                    for (String h : headers) {
+                                        aKeyCombo.addItem(h);
+                                        aValCombo.addItem(h);
+                                    }
+                                    if (aKeyCombo.getItemCount() > 0) aKeyCombo.setSelectedIndex(0);
+                                    if (aValCombo.getItemCount() > 0) aValCombo.setSelectedIndex(0);
+                                });
+                            } catch (Exception ex) {
+                                SwingUtilities.invokeLater(() -> {
+                                    aHeadersArea.setText("读取源表表头失败: " + ex.getMessage());
+                                    aKeyCombo.removeAllItems();
+                                    aValCombo.removeAllItems();
+                                });
+                            }
+                            return null;
+                        }
+                        @Override
+                        protected void done() {
+                            progressDialog.dispose();
+                        }
+                    };
+                    worker.execute();
+                    progressDialog.setVisible(true);
+                    try {
+                        worker.get();
+                    } catch (Exception ex) {
+                        // ignore
+                    }
+                }
             });
+            // 选择目标表按钮点击事件
             selB.addActionListener(e -> {
+                if (!isSelBEnabled[0]) return;
                 JFileChooser fc = new JFileChooser();
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION)
+                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
                     bPath.setText(fc.getSelectedFile().getAbsolutePath());
+                    // 统一进度条弹窗
+                    JProgressBar[] progressBarHolder = new JProgressBar[1];
+                    JLabel[] percentLabelHolder = new JLabel[1];
+                    JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载目标表表头，请稍候...", true, progressBarHolder, percentLabelHolder);
+                    SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+                        @Override
+                        protected Void doInBackground() throws Exception {
+                            try {
+                                java.util.List<String> headers = new CrossSheetFiller().readHeadersOnly(new File(bPath.getText()));
+                                SwingUtilities.invokeLater(() -> {
+                                    bHeadersArea.setText(String.join(", ", headers));
+                                    bKeyCombo.removeAllItems();
+                                    bValCombo.removeAllItems();
+                                    for (String h : headers) {
+                                        bKeyCombo.addItem(h);
+                                        bValCombo.addItem(h);
+                                    }
+                                    if (bKeyCombo.getItemCount() > 0) bKeyCombo.setSelectedIndex(0);
+                                    if (bValCombo.getItemCount() > 0) bValCombo.setSelectedIndex(0);
+                                });
+                            } catch (Exception ex) {
+                                SwingUtilities.invokeLater(() -> {
+                                    bHeadersArea.setText("读取目标表表头失败: " + ex.getMessage());
+                                    bKeyCombo.removeAllItems();
+                                    bValCombo.removeAllItems();
+                                });
+                            }
+                            return null;
+                        }
+                        @Override
+                        protected void done() {
+                            progressDialog.dispose();
+                        }
+                    };
+                    worker.execute();
+                    progressDialog.setVisible(true);
+                    try {
+                        worker.get();
+                    } catch (Exception ex) {
+                        // ignore
+                    }
+                }
             });
             selOut.addActionListener(e -> {
+                if (!isSelOutEnabled[0]) return;
                 JFileChooser fc = new JFileChooser();
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
                 if (fc.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) {
@@ -334,23 +580,20 @@ public class CrossSheetFiller {
                 }
             });
             runBtn.addActionListener(e -> {
-                JDialog progressDialog = new JDialog(frame, "处理中", true);
-                JProgressBar progressBar = new JProgressBar();
-                progressBar.setStringPainted(true);
-                progressBar.setIndeterminate(false);
-                progressDialog.setLayout(new BorderLayout(10, 10));
-                progressDialog.add(new JLabel("正在填充数据，请稍候..."), BorderLayout.NORTH);
-                progressDialog.add(progressBar, BorderLayout.CENTER);
-                progressDialog.setSize(350, 100);
-                progressDialog.setLocationRelativeTo(frame);
-
+                // 统一进度条弹窗
+                JProgressBar[] progressBarHolder = new JProgressBar[1];
+                JLabel[] percentLabelHolder = new JLabel[1];
+                JDialog progressDialog = createProgressDialog(frame, "处理中", "正在处理数据...", false, progressBarHolder, percentLabelHolder);
+                JProgressBar progressBar = progressBarHolder[0];
+                JLabel percentLabel = percentLabelHolder[0];
                 SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
                     @Override
                     protected Void doInBackground() {
                         try {
                             new CrossSheetFiller().fill(
                                     aPath.getText(), bPath.getText(), outPath.getText(),
-                                    aKey.getText(), bKey.getText(), aVal.getText(), bVal.getText(),
+                                    (String)aKeyCombo.getSelectedItem(), (String)aValCombo.getSelectedItem(),
+                                    (String)bKeyCombo.getSelectedItem(), (String)bValCombo.getSelectedItem(),
                                     (cur, total) -> publish((int) (cur * 100.0 / total))
                             );
                         } catch (Exception ex) {
@@ -364,6 +607,7 @@ public class CrossSheetFiller {
                         if (!chunks.isEmpty()) {
                             int val = chunks.get(chunks.size() - 1);
                             progressBar.setValue(val);
+                            if (percentLabel != null) percentLabel.setText(val + "%");
                         }
                     }
 
