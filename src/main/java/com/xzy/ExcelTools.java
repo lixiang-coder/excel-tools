@@ -31,10 +31,12 @@ public class ExcelTools {
     private static final Logger logger = LogManager.getLogger(ExcelTools.class);
     private static final String OTHER_REMARK_SEPARATOR = "|";
 
-    // 配置常量
+    // 动态内存配置管理器
+    private final MemoryConfigManager memoryConfig = MemoryConfigManager.getInstance();
+    private ChunkedMappingProcessor chunkedProcessor;
+    
+    // 配置常量（将被动态配置替代）
     private static final int MAX_FILE_SIZE_MB = 1000; // 最大文件大小（MB）
-    private static final int BATCH_SIZE = 1000; // 批处理大小
-    private static final int MEMORY_WINDOW_SIZE = 100; // SXSSF内存窗口大小
     private static final String[] SUPPORTED_EXTENSIONS = {"xlsx", "xls"};
     private static final String ERROR_TITLE = "错误";
     private static final String SUCCESS_TITLE = "成功";
@@ -68,9 +70,25 @@ public class ExcelTools {
     private String outputFilePath;
 
     public ExcelTools() {
-        // 设置POI的大文件处理参数
-        IOUtils.setByteArrayMaxOverride(1000000000); // 设置更大的记录长度限制
-        initializeUI();
+        try {
+            // 根据内存配置调整POI参数
+            long memoryLimit = memoryConfig.getMaxFileSize() * 1024L * 1024L * 10; // 10倍于最大文件大小
+            IOUtils.setByteArrayMaxOverride((int) Math.min(memoryLimit, 1000000000L));
+            
+            // 初始化分块处理器
+            chunkedProcessor = new ChunkedMappingProcessor();
+            
+            initializeUI();
+            
+            // 显示内存状态
+            log("系统配置: " + memoryConfig.getMemoryStatus());
+            log("优化参数 - 内存窗口: " + memoryConfig.getMemoryWindowSize() + 
+                ", 批处理: " + memoryConfig.getBatchSize());
+                
+        } catch (Exception e) {
+            logger.error("初始化失败", e);
+            throw new RuntimeException("初始化失败: " + e.getMessage());
+        }
     }
 
     private void initializeUI() {
@@ -1280,8 +1298,13 @@ public class ExcelTools {
                         headerMappings.add(new HeaderMapping(sourceHeaders, targetHeader));
                     }
 
-                    // 使用SXSSFWorkbook来处理大文件
-                    try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
+                    // 使用动态内存配置的SXSSFWorkbook来处理大文件
+                    int dynamicWindowSize = memoryConfig.getMemoryWindowSize();
+                    try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(dynamicWindowSize)) {
+                        // 启用临时文件压缩以节省磁盘空间
+                        if (memoryConfig.isEnableCompression()) {
+                            outputWorkbook.setCompressTempFiles(true);
+                        }
                         Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
 
                         // 写入模板表头
@@ -1295,7 +1318,12 @@ public class ExcelTools {
                         int rowNum = 1;
                         int totalRows = sheet.getLastRowNum();
                         int processedRows = 0;
-                        int batchSize = BATCH_SIZE; // 每批处理的行数
+                        
+                        // 根据文件大小动态调整批处理大小
+                        long fileSizeMB = inputFile.length() / (1024 * 1024);
+                        int batchSize = memoryConfig.getOptimalBatchSize(fileSizeMB);
+                        
+                        log(String.format("文件大小: %dMB, 使用批处理大小: %d", fileSizeMB, batchSize));
 
                         // 显示开始处理的消息
                         SwingUtilities.invokeLater(() -> {
@@ -1377,8 +1405,15 @@ public class ExcelTools {
                                 progressLabel.setText("正在处理数据... " + progress + "%");
                             });
 
-                            // 清理临时文件
+                            // 清理临时文件和内存监控
                             ((SXSSFSheet)outputSheet).flushRows();
+                            
+                            // 内存监控和垃圾回收
+                            if (memoryConfig.checkMemoryWarning()) {
+                                log("内存使用率过高，触发垃圾回收");
+                                memoryConfig.forceGarbageCollection();
+                                log("垃圾回收后: " + memoryConfig.getMemoryStatus());
+                            }
                         }
 
                         // 保存文件
@@ -1536,9 +1571,18 @@ public class ExcelTools {
         if (!file.canRead()) {
             throw new IOException("无法读取" + fileType + "文件，请检查文件权限: " + file.getAbsolutePath());
         }
-        if (file.length() > MAX_FILE_SIZE_MB * 1024 * 1024) {
-            throw new IOException(fileType + "文件过大，超过" + MAX_FILE_SIZE_MB + "MB限制");
+        
+        long fileSizeMB = file.length() / (1024 * 1024);
+        if (!memoryConfig.canProcessFile(fileSizeMB)) {
+            throw new IOException(String.format("%s文件过大(%.1fMB)，当前配置最大支持%dMB\n建议: 增加JVM内存或分割文件", 
+                                fileType, (double)fileSizeMB, memoryConfig.getMaxFileSize()));
         }
+        
+        // 检查内存状态
+        if (memoryConfig.checkMemoryWarning()) {
+            log("警告: 当前内存使用率较高，建议关闭其他程序");
+        }
+        
         String extension = getFileExtension(file.getName());
         if (!Arrays.asList(SUPPORTED_EXTENSIONS).contains(extension.toLowerCase())) {
             throw new IOException("不支持的文件格式: " + extension);
