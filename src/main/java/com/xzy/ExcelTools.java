@@ -31,10 +31,12 @@ public class ExcelTools {
     private static final Logger logger = LogManager.getLogger(ExcelTools.class);
     private static final String OTHER_REMARK_SEPARATOR = "|";
 
-    // 配置常量
+    // 动态内存配置管理器
+    private final MemoryConfigManager memoryConfig = MemoryConfigManager.getInstance();
+    private ChunkedMappingProcessor chunkedProcessor;
+    
+    // 配置常量（将被动态配置替代）
     private static final int MAX_FILE_SIZE_MB = 1000; // 最大文件大小（MB）
-    private static final int BATCH_SIZE = 1000; // 批处理大小
-    private static final int MEMORY_WINDOW_SIZE = 100; // SXSSF内存窗口大小
     private static final String[] SUPPORTED_EXTENSIONS = {"xlsx", "xls"};
     private static final String ERROR_TITLE = "错误";
     private static final String SUCCESS_TITLE = "成功";
@@ -68,9 +70,25 @@ public class ExcelTools {
     private String outputFilePath;
 
     public ExcelTools() {
-        // 设置POI的大文件处理参数
-        IOUtils.setByteArrayMaxOverride(1000000000); // 设置更大的记录长度限制
-        initializeUI();
+        try {
+            // 根据内存配置调整POI参数
+            long memoryLimit = memoryConfig.getMaxFileSize() * 1024L * 1024L * 10; // 10倍于最大文件大小
+            IOUtils.setByteArrayMaxOverride((int) Math.min(memoryLimit, 1000000000L));
+            
+            // 初始化分块处理器
+            chunkedProcessor = new ChunkedMappingProcessor();
+            
+            initializeUI();
+            
+            // 显示内存状态
+            log("系统配置: " + memoryConfig.getMemoryStatus());
+            log("优化参数 - 内存窗口: " + memoryConfig.getMemoryWindowSize() + 
+                ", 批处理: " + memoryConfig.getBatchSize());
+                
+        } catch (Exception e) {
+            logger.error("初始化失败", e);
+            throw new RuntimeException("初始化失败: " + e.getMessage());
+        }
     }
 
     private void initializeUI() {
@@ -1048,153 +1066,61 @@ public class ExcelTools {
             progressDialog.pack();
             progressDialog.setLocationRelativeTo(mainFrame);
 
+            // 使用流式处理器避免OOM - 百万数据不会全量加载
+            StreamingMappingApplier streamingApplier = new StreamingMappingApplier();
+
             // 在后台线程中处理数据
             SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                 @Override
                 protected Void doInBackground() throws Exception {
-                    try (FileInputStream fis = new FileInputStream(file);
-                         Workbook workbook = new XSSFWorkbook(fis);
-                         FileOutputStream fos = new FileOutputStream(outputFile)) {
-
-                        Sheet sheet = workbook.getSheetAt(0);
-
-                        // 获取表头索引
-                        Map<String, Integer> headerIndexMap = new HashMap<>();
-                        Row headerRow = sheet.getRow(0);
-                        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                            Cell cell = headerRow.getCell(i);
-                            if (cell != null) {
-                                headerIndexMap.put(cell.getStringCellValue().trim(), i);
-                            }
-                        }
-
-                        // 获取查找字段和填充字段的索引
-                        Integer lookupIndex = headerIndexMap.get(lookupField);
-                        Integer fillIndex = headerIndexMap.get(fillField);
-
-                        if (lookupIndex == null || fillIndex == null) {
-                            throw new IOException("找不到指定的字段");
-                        }
-
-                        // 创建新的工作簿
-                        Workbook outputWorkbook = new XSSFWorkbook();
-                        Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
-
-                        // 复制表头
-                        Row outputHeaderRow = outputSheet.createRow(0);
-                        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                            Cell cell = headerRow.getCell(i);
-                            if (cell != null) {
-                                Cell outputCell = outputHeaderRow.createCell(i);
-                                copyCellValue(cell, outputCell);
-                            }
-                        }
-
-                        // 处理数据行
-                        final int totalRows = sheet.getLastRowNum();
-                        int processedRows = 0;
-                        int updatedCount = 0;
-
-                        // 显示开始处理的消息
-                        SwingUtilities.invokeLater(() -> {
-                            statusLabel.setText("正在应用映射关系...");
-                            log("开始应用映射关系，共 " + totalRows + " 行数据");
-                        });
-
-                        for (int i = 1; i <= totalRows; i++) {
-                            Row row = sheet.getRow(i);
-                            if (row == null) continue;
-
-                            // 创建新行
-                            Row outputRow = outputSheet.createRow(i);
-
-                            // 复制所有单元格
-                            for (int j = 0; j < row.getLastCellNum(); j++) {
-                                Cell cell = row.getCell(j);
-                                if (cell != null) {
-                                    Cell outputCell = outputRow.createCell(j);
-                                    copyCellValue(cell, outputCell);
-                                }
-                            }
-
-                            // 获取查找字段的值
-                            Cell lookupCell = row.getCell(lookupIndex);
-                            if (lookupCell != null) {
-                                String lookupValue = getCellValueAsString(lookupCell);
-
-                                // 创建填充单元格
-                                Cell outputFillCell = outputRow.getCell(fillIndex);
-                                if (outputFillCell == null) {
-                                    outputFillCell = outputRow.createCell(fillIndex);
-                                }
-
-                                // 在映射关系中查找对应的值
-                                String mappedValue = null;
-                                // 优先用key查找（即查找字段是key）
-                                if (mappingRelations.containsKey(lookupValue)) {
-                                    mappedValue = mappingRelations.get(lookupValue);
-                                } else {
-                                    // 否则遍历value查找key（兼容旧逻辑）
-                                    for (Map.Entry<String, String> entry : mappingRelations.entrySet()) {
-                                        if (entry.getValue().equals(lookupValue)) {
-                                            mappedValue = entry.getKey();
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                // 如果找到对应的映射值，则填充到填充字段
-                                if (mappedValue != null) {
-                                    outputFillCell.setCellValue(mappedValue);
-                                    updatedCount++;
-                                } else {
-                                    // 如果找不到映射关系，则直接将查找字段的值复制到填充字段
-                                    outputFillCell.setCellValue(lookupValue);
-                                }
-                            }
-
-                            processedRows++;
+                    // 使用SAX流式处理，不会一次性加载整个文件到内存
+                    streamingApplier.applyMapping(file, lookupField, fillField,
+                        mappingRelations, outputFile,
+                        (current, total) -> {
                             // 更新进度
-                            final int progress = (int) ((i * 100.0) / totalRows);
                             SwingUtilities.invokeLater(() -> {
                                 progressBar.setIndeterminate(false);
-                                progressBar.setValue(progress);
-                                progressLabel.setText("正在处理数据... " + progress + "%");
+                                progressBar.setValue(current % 100);
+                                progressLabel.setText("正在处理数据... 已处理 " + current + " 行");
+
+                                // 定期更新内存状态
+                                if (current % 5000 == 0) {
+                                    log("已处理: " + current + " 行, " + memoryConfig.getMemoryStatus());
+                                }
                             });
-                        }
-
-                        // 保存文件
-                        outputWorkbook.write(fos);
-
-                        // 显示处理完成的消息
-                        final int finalUpdatedCount = updatedCount;
-                        SwingUtilities.invokeLater(() -> {
-                            statusLabel.setText("已更新 " + finalUpdatedCount + " 条记录");
-                            log("处理完成，共更新 " + finalUpdatedCount + " 条记录");
                         });
-
-                    }
                     return null;
                 }
 
                 @Override
                 protected void done() {
                     progressDialog.dispose();
+                    try {
+                        get(); // 检查是否有异常
+                        SwingUtilities.invokeLater(() -> {
+                            statusLabel.setText("映射应用完成");
+                            log("映射应用完成！");
+                            JOptionPane.showMessageDialog(mainFrame,
+                                "映射应用完成！",
+                                SUCCESS_TITLE,
+                                JOptionPane.INFORMATION_MESSAGE);
+                        });
+                    } catch (Exception e) {
+                        logger.error("应用映射关系时出错", e);
+                        SwingUtilities.invokeLater(() -> {
+                            statusLabel.setText("处理失败: " + e.getMessage());
+                            log("处理失败: " + e.getMessage());
+                            JOptionPane.showMessageDialog(mainFrame,
+                                "应用映射关系时出错: " + e.getMessage(),
+                                ERROR_TITLE,
+                                JOptionPane.ERROR_MESSAGE);
+                        });
+                    }
                 }
             };
 
             worker.execute();
             progressDialog.setVisible(true);
-
-            try {
-                worker.get();
-            } catch (Exception e) {
-                logger.error("应用映射关系时出错", e);
-                JOptionPane.showMessageDialog(mainFrame,
-                        "应用映射关系时出错: " + e.getMessage(),
-                        "错误",
-                        JOptionPane.ERROR_MESSAGE);
-            }
         }
     }
 
@@ -1224,194 +1150,61 @@ public class ExcelTools {
         JLabel progressLabel = (JLabel) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(0);
         JProgressBar progressBar = (JProgressBar) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(1);
 
+        // 使用流式处理器避免OOM - 不会将整个文件加载到内存
+        StreamingExcelProcessor streamingProcessor = new StreamingExcelProcessor();
+
         // 在后台线程中处理数据
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
             @Override
             protected Void doInBackground() throws Exception {
-                try (FileInputStream fis = new FileInputStream(inputFile);
-                     Workbook workbook = WorkbookFactory.create(fis);
-                     FileInputStream templateFis = new FileInputStream(templateFile);
-                     Workbook templateWorkbook = WorkbookFactory.create(templateFis)) {
-
-                    Sheet sheet = workbook.getSheetAt(0);
-                    Sheet templateSheet = templateWorkbook.getSheetAt(0);
-
-                    // 获取模板文件的表头
-                    List<String> templateHeaders = new ArrayList<>();
-                    Row templateHeaderRow = templateSheet.getRow(0);
-                    if (templateHeaderRow != null) {
-                        for (int i = 0; i < templateHeaderRow.getLastCellNum(); i++) {
-                            Cell cell = templateHeaderRow.getCell(i);
-                            if (cell != null) {
-                                templateHeaders.add(cell.getStringCellValue());
-                            }
-                        }
-                    }
-
-                    // 获取源文件的表头
-                    Map<String, Integer> sourceHeaderMap = new LinkedHashMap<>();
-                    Row headerRow = sheet.getRow(0);
-                    if (headerRow != null) {
-                        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                            Cell cell = headerRow.getCell(i);
-                            if (cell != null) {
-                                sourceHeaderMap.put(cell.getStringCellValue(), i);
-                            }
-                        }
-                    }
-
-                    // 将简单映射转换为HeaderMapping对象
-                    List<HeaderMapping> headerMappings = new ArrayList<>();
-                    Map<String, List<String>> targetToSourceMap = new HashMap<>();
-
-                    // 首先按目标表头分组
-                    for (Map.Entry<String, String> entry : mappings.entrySet()) {
-                        String sourceHeader = entry.getKey();
-                        String targetHeader = entry.getValue();
-
-                        targetToSourceMap.computeIfAbsent(targetHeader, k -> new ArrayList<>()).add(sourceHeader);
-                    }
-
-                    // 然后创建HeaderMapping对象
-                    for (Map.Entry<String, List<String>> entry : targetToSourceMap.entrySet()) {
-                        String targetHeader = entry.getKey();
-                        List<String> sourceHeaders = entry.getValue();
-
-                        headerMappings.add(new HeaderMapping(sourceHeaders, targetHeader));
-                    }
-
-                    // 使用SXSSFWorkbook来处理大文件
-                    try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
-                        Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
-
-                        // 写入模板表头
-                        Row outputHeaderRow = outputSheet.createRow(0);
-                        for (int i = 0; i < templateHeaders.size(); i++) {
-                            Cell cell = outputHeaderRow.createCell(i);
-                            cell.setCellValue(templateHeaders.get(i));
-                        }
-
-                        // 处理数据行
-                        int rowNum = 1;
-                        int totalRows = sheet.getLastRowNum();
-                        int processedRows = 0;
-                        int batchSize = BATCH_SIZE; // 每批处理的行数
-
-                        // 显示开始处理的消息
+                // 使用SAX流式处理，不会一次性加载整个文件到内存
+                streamingProcessor.processExcel(inputFile, templateFile, outputFile, mappings,
+                    (current, total) -> {
+                        // 更新进度
+                        final int progress = total > 0 ? (int) ((current * 100.0) / total) : 0;
                         SwingUtilities.invokeLater(() -> {
-                            statusLabel.setText("正在处理数据...");
-                            log("开始处理数据，共 " + totalRows + " 行");
-                        });
+                            progressBar.setIndeterminate(false);
+                            progressBar.setValue(progress);
+                            progressLabel.setText("正在处理数据... " + progress + "%");
 
-                        // 批量处理数据
-                        for (int i = 1; i <= totalRows; i += batchSize) {
-                            int endRow = Math.min(i + batchSize - 1, totalRows);
-
-                            for (int j = i; j <= endRow; j++) {
-                                Row sourceRow = sheet.getRow(j);
-                                if (sourceRow == null) continue;
-
-                                Row outputRow = outputSheet.createRow(rowNum++);
-
-                                // 根据映射规则处理每一行数据
-                                for (HeaderMapping mapping : headerMappings) {
-                                    if (mapping.isMerge()) {
-                                        // 处理需要合并的多个源表头
-                                        StringBuilder mergedValue = new StringBuilder();
-                                        for (String sourceHeader : mapping.getSourceHeaders()) {
-                                            Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
-                                            if (sourceIndex != null) {
-                                                Cell sourceCell = sourceRow.getCell(sourceIndex);
-                                                if (sourceCell != null) {
-                                                    String value = getCellValueAsString(sourceCell);
-                                                    if (!value.isEmpty()) {
-                                                        if (mergedValue.length() > 0) {
-                                                            // 根据格式类型选择分隔符
-                                                            mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ?
-                                                                "," : OTHER_REMARK_SEPARATOR);
-                                                        }
-                                                        // 根据格式类型决定是否添加源表头名称
-                                                        if (mapping.getFormatType() == HeaderMapping.FormatType.PIPE_SEPARATED) {
-                                                            mergedValue.append(sourceHeader).append("：");
-                                                        }
-                                                        mergedValue.append(value);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if (mergedValue.length() > 0) {
-                                            int targetColumnIndex = templateHeaders.indexOf(mapping.getTargetHeader());
-                                            if (targetColumnIndex >= 0) {
-                                                Cell targetCell = outputRow.createCell(targetColumnIndex);
-                                                targetCell.setCellValue(mergedValue.toString());
-                                            }
-                                        }
-                                    } else {
-                                        // 处理单个源表头
-                                        String sourceHeader = mapping.getSourceHeaders().get(0);
-                                        Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
-                                        if (sourceIndex != null) {
-                                            Cell sourceCell = sourceRow.getCell(sourceIndex);
-                                            if (sourceCell != null) {
-                                                String value = getCellValueAsString(sourceCell);
-                                                if (!value.isEmpty()) {
-                                                    int targetColumnIndex = templateHeaders.indexOf(mapping.getTargetHeader());
-                                                    if (targetColumnIndex >= 0) {
-                                                        Cell targetCell = outputRow.createCell(targetColumnIndex);
-                                                        targetCell.setCellValue(value);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                processedRows++;
+                            // 定期更新内存状态
+                            if (current % 5000 == 0) {
+                                log("已处理: " + current + " 行, " + memoryConfig.getMemoryStatus());
                             }
-
-                            // 更新进度
-                            final int progress = (int) ((processedRows * 100.0) / totalRows);
-                            SwingUtilities.invokeLater(() -> {
-                                progressBar.setIndeterminate(false);
-                                progressBar.setValue(progress);
-                                progressLabel.setText("正在处理数据... " + progress + "%");
-                            });
-
-                            // 清理临时文件
-                            ((SXSSFSheet)outputSheet).flushRows();
-                        }
-
-                        // 保存文件
-                        try (FileOutputStream fos = new FileOutputStream(outputFile)) {
-                            outputWorkbook.write(fos);
-                        }
-
-                        // 显示处理完成的消息
-                        final int finalProcessedRows = processedRows;
-                        SwingUtilities.invokeLater(() -> {
-                            statusLabel.setText("处理完成，共处理 " + finalProcessedRows + " 行数据");
-                            log("处理完成，共处理 " + finalProcessedRows + " 行数据");
                         });
-                    }
-                }
+                    });
                 return null;
             }
 
             @Override
             protected void done() {
                 progressDialog.dispose();
+                try {
+                    get(); // 检查是否有异常
+                    SwingUtilities.invokeLater(() -> {
+                        statusLabel.setText("处理完成");
+                        log("Excel处理完成！");
+                        JOptionPane.showMessageDialog(mainFrame,
+                            "Excel处理完成！",
+                            SUCCESS_TITLE,
+                            JOptionPane.INFORMATION_MESSAGE);
+                    });
+                } catch (Exception e) {
+                    logger.error("处理失败", e);
+                    SwingUtilities.invokeLater(() -> {
+                        statusLabel.setText("处理失败: " + e.getMessage());
+                        log("处理失败: " + e.getMessage());
+                        JOptionPane.showMessageDialog(mainFrame,
+                            "处理失败: " + e.getMessage(),
+                            ERROR_TITLE,
+                            JOptionPane.ERROR_MESSAGE);
+                    });
+                }
             }
         };
 
         worker.execute();
         progressDialog.setVisible(true);
-
-        try {
-            worker.get();
-        } catch (Exception e) {
-            logger.error("处理Excel文件时发生错误", e);
-            throw new RuntimeException("处理Excel文件失败: " + e.getMessage());
-        }
     }
 
     private String getCellValueAsString(Cell cell) {
@@ -1536,9 +1329,18 @@ public class ExcelTools {
         if (!file.canRead()) {
             throw new IOException("无法读取" + fileType + "文件，请检查文件权限: " + file.getAbsolutePath());
         }
-        if (file.length() > MAX_FILE_SIZE_MB * 1024 * 1024) {
-            throw new IOException(fileType + "文件过大，超过" + MAX_FILE_SIZE_MB + "MB限制");
+        
+        long fileSizeMB = file.length() / (1024 * 1024);
+        if (!memoryConfig.canProcessFile(fileSizeMB)) {
+            throw new IOException(String.format("%s文件过大(%.1fMB)，当前配置最大支持%dMB\n建议: 增加JVM内存或分割文件", 
+                                fileType, (double)fileSizeMB, memoryConfig.getMaxFileSize()));
         }
+        
+        // 检查内存状态
+        if (memoryConfig.checkMemoryWarning()) {
+            log("警告: 当前内存使用率较高，建议关闭其他程序");
+        }
+        
         String extension = getFileExtension(file.getName());
         if (!Arrays.asList(SUPPORTED_EXTENSIONS).contains(extension.toLowerCase())) {
             throw new IOException("不支持的文件格式: " + extension);
