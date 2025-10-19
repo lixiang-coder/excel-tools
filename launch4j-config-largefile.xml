@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch4jConfig>
+  <dontWrapJar>false</dontWrapJar>
+  <headerType>gui</headerType>
+  <jar>target/excel-processor-1.0-SNAPSHOT.jar</jar>
+  <outfile>ExcelProcessor_LargeFile.exe</outfile>
+  <errTitle>Excel工具集（大文件版）</errTitle>
+  <cmdLine></cmdLine>
+  <chdir>.</chdir>
+  <priority>normal</priority>
+  <downloadUrl>https://adoptium.net/</downloadUrl>
+  <supportUrl></supportUrl>
+  <stayAlive>false</stayAlive>
+  <restartOnCrash>false</restartOnCrash>
+  <manifest></manifest>
+  <jre>
+    <path></path>
+    <bundledJre64Bit>false</bundledJre64Bit>
+    <bundledJreAsFallback>false</bundledJreAsFallback>
+    <minVersion>1.8.0</minVersion>
+    <maxVersion></maxVersion>
+    <jdkPreference>preferJre</jdkPreference>
+    <runtimeBits>64/32</runtimeBits>
+    <!-- JVM内存配置：大文件专用，6GB内存 -->
+    <initialHeapSize>2048</initialHeapSize>
+    <maxHeapSize>6144</maxHeapSize>
+    <!-- JVM参数配置 -->
+    <opt>-XX:+UseG1GC</opt>
+    <opt>-XX:MaxGCPauseMillis=100</opt>
+    <opt>-XX:+UseStringDeduplication</opt>
+    <opt>-XX:G1HeapRegionSize=16m</opt>
+    <opt>-Dfile.encoding=UTF-8</opt>
+    <opt>-Dsun.java2d.noddraw=true</opt>
+  </jre>
+  <versionInfo>
+    <fileVersion>1.0.0.0</fileVersion>
+    <txtFileVersion>1.0.0.0</txtFileVersion>
+    <fileDescription>Excel工具集 - 大文件专用版（6GB内存）</fileDescription>
+    <copyright>Copyright © 2025</copyright>
+    <productVersion>1.0.0.0</productVersion>
+    <txtProductVersion>1.0.0.0</txtProductVersion>
+    <productName>Excel工具集（大文件版）</productName>
+    <companyName></companyName>
+    <internalName>ExcelProcessor_LargeFile</internalName>
+    <originalFilename>ExcelProcessor_LargeFile.exe</originalFilename>
+    <trademarks></trademarks>
+    <language>SIMPLIFIED_CHINESE</language>
+  </versionInfo>
+  <messages>
+    <startupErr>启动应用程序时发生错误。</startupErr>
+    <jreNotFoundErr>此应用程序需要Java运行环境（JRE）。请访问 https://adoptium.net/ 下载安装。</jreNotFoundErr>
+    <jreVersionErr>此应用程序需要Java 8或更高版本。</jreVersionErr>
+    <launcherErr>注册表引用了不存在的Java运行环境，或运行时已损坏。</launcherErr>
+  </messages>
+  <splash>
+    <timeout>60</timeout>
+    <timeoutErr>true</timeoutErr>
+  </splash>
+</launch4jConfig>

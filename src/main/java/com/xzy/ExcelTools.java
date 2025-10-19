@@ -8,17 +8,18 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
 import org.apache.poi.xssf.model.SharedStringsTable;
-import org.apache.poi.xssf.streaming.SXSSFSheet;
-import org.apache.poi.xssf.streaming.SXSSFWorkbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
 import org.xml.sax.helpers.XMLReaderFactory;
+
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
-import java.awt.*;
 import java.awt.Color;
-import java.io.*;
+import java.awt.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.*;
 
@@ -72,19 +73,32 @@ public class ExcelTools {
     public ExcelTools() {
         try {
             // 根据内存配置调整POI参数
-            long memoryLimit = memoryConfig.getMaxFileSize() * 1024L * 1024L * 10; // 10倍于最大文件大小
-            IOUtils.setByteArrayMaxOverride((int) Math.min(memoryLimit, 1000000000L));
-            
+            // 计算合理的最大数组大小：基于可用内存的70%，但不超过2GB（Integer.MAX_VALUE限制）
+            long availableMemory = Runtime.getRuntime().maxMemory();
+            long maxArraySize = Math.min((long)(availableMemory * 0.7), Integer.MAX_VALUE - 8);
+
+            // 至少设置为2GB（如果内存允许），否则使用可用内存的70%
+            maxArraySize = Math.max(maxArraySize, 2_000_000_000L);
+
+            // 如果计算出的值超过Integer.MAX_VALUE，使用最大安全值
+            if (maxArraySize > Integer.MAX_VALUE - 8) {
+                maxArraySize = Integer.MAX_VALUE - 8;
+            }
+
+            logger.info("设置POI最大数组大小为: " + (maxArraySize / 1024 / 1024) + "MB");
+            IOUtils.setByteArrayMaxOverride((int) maxArraySize);
+
             // 初始化分块处理器
             chunkedProcessor = new ChunkedMappingProcessor();
-            
+
             initializeUI();
-            
+
             // 显示内存状态
             log("系统配置: " + memoryConfig.getMemoryStatus());
-            log("优化参数 - 内存窗口: " + memoryConfig.getMemoryWindowSize() + 
+            log("优化参数 - 内存窗口: " + memoryConfig.getMemoryWindowSize() +
                 ", 批处理: " + memoryConfig.getBatchSize());
-                
+            log("POI最大数组大小: " + (maxArraySize / 1024 / 1024) + "MB");
+
         } catch (Exception e) {
             logger.error("初始化失败", e);
             throw new RuntimeException("初始化失败: " + e.getMessage());
@@ -646,14 +660,32 @@ public class ExcelTools {
      */
     private List<String> readXLSXHeaders(File file) throws IOException {
         List<String> headers = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(file)) {
-            OPCPackage pkg = OPCPackage.open(fis);
+        OPCPackage pkg = null;
+        InputStream sheet = null;
+
+        try {
+            FileInputStream fis = new FileInputStream(file);
+            pkg = OPCPackage.open(fis);
             XSSFReader reader = new XSSFReader(pkg);
             XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
-            SharedStringsTable sst = (SharedStringsTable) reader.getSharedStringsTable();
+
+            // 获取共享字符串表（可能很大，需要足够内存）
+            SharedStringsTable sst;
+            try {
+                sst = (SharedStringsTable) reader.getSharedStringsTable();
+            } catch (OutOfMemoryError e) {
+                throw new IOException("内存不足，无法加载Excel文件的字符串表。" +
+                        "请使用 start_optimized.bat 或增加JVM内存（-Xmx参数）重新启动。", e);
+            } catch (Exception e) {
+                if (e.getMessage() != null && e.getMessage().contains("allocate an array")) {
+                    throw new IOException("文件的共享字符串表过大，超出内存限制。" +
+                            "建议使用 start_optimized.bat 启动或增加内存分配。", e);
+                }
+                throw e;
+            }
 
             if (it.hasNext()) {
-                InputStream sheet = it.next();
+                sheet = it.next();
                 try {
                     XMLReader parser = XMLReaderFactory.createXMLReader();
                     try {
@@ -670,13 +702,29 @@ public class ExcelTools {
                     headers = handler.getHeaders();
                 } catch (SAXException e) {
                     throw new IOException("解析Excel文件时出错: " + e.getMessage(), e);
-                } finally {
-                    sheet.close();
                 }
             }
-            pkg.close();
         } catch (OpenXML4JException e) {
             throw new IOException("打开Excel文件时出错: " + e.getMessage(), e);
+        } catch (OutOfMemoryError e) {
+            logger.error("内存不足", e);
+            throw new IOException("内存不足，无法处理此文件。请使用 start_optimized.bat 或增加JVM内存重新启动。", e);
+        } finally {
+            // 确保资源关闭
+            if (sheet != null) {
+                try {
+                    sheet.close();
+                } catch (IOException e) {
+                    logger.warn("关闭sheet流时出错", e);
+                }
+            }
+            if (pkg != null) {
+                try {
+                    pkg.close();
+                } catch (IOException e) {
+                    logger.warn("关闭OPCPackage时出错", e);
+                }
+            }
         }
         return headers;
     }
@@ -881,35 +929,53 @@ public class ExcelTools {
     }
 
     private void loadMappingHeaders(File file, JList<String> sourceList, JList<String> targetList) {
-        try (FileInputStream fis = new FileInputStream(file)) {
-            // 使用XSSFWorkbook来处理大文件
-            Workbook workbook = new XSSFWorkbook(fis);
-            Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
+        try {
+            // 验证文件大小
+            long fileSizeMB = file.length() / (1024 * 1024);
+            if (fileSizeMB > memoryConfig.getMaxFileSize()) {
+                String errorMsg = String.format("文件过大 (%dMB)，当前系统最大支持 %dMB 的文件。\n" +
+                        "建议：\n1. 使用start_optimized.bat启动以获得更多内存\n" +
+                        "2. 或将文件拆分为较小的文件",
+                        fileSizeMB, memoryConfig.getMaxFileSize());
+                throw new IOException(errorMsg);
+            }
+
+            // 使用SAX方式读取表头，内存友好
+            List<String> headers = readHeadersOnly(file);
 
             DefaultListModel<String> sourceModel = new DefaultListModel<>();
             DefaultListModel<String> targetModel = new DefaultListModel<>();
 
-            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                Cell cell = headerRow.getCell(i);
-                if (cell != null) {
-                    String header = cell.getStringCellValue().trim();
-                    sourceModel.addElement(header);
-                    targetModel.addElement(header);
+            for (String header : headers) {
+                if (header != null && !header.trim().isEmpty()) {
+                    sourceModel.addElement(header.trim());
+                    targetModel.addElement(header.trim());
                 }
             }
 
             sourceList.setModel(sourceModel);
             targetList.setModel(targetModel);
-            workbook.close();
 
             statusLabel.setText("已加载 " + sourceModel.size() + " 个表头");
-            log("成功加载表头: " + file.getName());
+            log("成功加载表头: " + file.getName() + " (" + fileSizeMB + "MB)");
 
         } catch (IOException e) {
+            logger.error("加载表头时出错", e);
             log("加载表头时出错: " + e.getMessage());
+
+            // 如果是数组分配错误，给出更详细的提示
+            String errorMsg = e.getMessage();
+            if (errorMsg != null && errorMsg.contains("allocate an array")) {
+                errorMsg = "文件包含的数据过于复杂，超出当前内存限制。\n\n" +
+                        "解决方案：\n" +
+                        "1. 使用 start_optimized.bat 启动程序\n" +
+                        "2. 或使用以下命令启动：\n" +
+                        "   java -Xmx4g -jar excel-processor.jar\n\n" +
+                        "原始错误: " + errorMsg;
+            }
+
             JOptionPane.showMessageDialog(mainFrame,
-                    "加载表头时出错: " + e.getMessage(),
+                    errorMsg,
                     "错误",
                     JOptionPane.ERROR_MESSAGE);
         }

@@ -2,9 +2,9 @@
 <launch4jConfig>
   <dontWrapJar>false</dontWrapJar>
   <headerType>gui</headerType>
-  <jar>target/excel-processor-1.0-SNAPSHOT-jar-with-dependencies.jar</jar>
+  <jar>target/excel-processor-1.0-SNAPSHOT.jar</jar>
   <outfile>ExcelProcessor.exe</outfile>
-  <errTitle>Excel Processor</errTitle>
+  <errTitle>Excel工具集</errTitle>
   <cmdLine></cmdLine>
   <chdir>.</chdir>
   <priority>normal</priority>
@@ -21,15 +21,24 @@
     <maxVersion></maxVersion>
     <jdkPreference>preferJre</jdkPreference>
     <runtimeBits>64/32</runtimeBits>
+    <!-- JVM内存配置：智能分配，适合大多数场景 -->
+    <initialHeapSize>512</initialHeapSize>
+    <maxHeapSize>4096</maxHeapSize>
+    <!-- JVM参数配置 -->
+    <opt>-XX:+UseG1GC</opt>
+    <opt>-XX:MaxGCPauseMillis=100</opt>
+    <opt>-XX:+UseStringDeduplication</opt>
+    <opt>-Dfile.encoding=UTF-8</opt>
+    <opt>-Dsun.java2d.noddraw=true</opt>
   </jre>
   <versionInfo>
     <fileVersion>1.0.0.0</fileVersion>
     <txtFileVersion>1.0.0.0</txtFileVersion>
-    <fileDescription>Excel Processor</fileDescription>
-    <copyright>Copyright © 2023</copyright>
+    <fileDescription>Excel工具集 - 支持大文件处理</fileDescription>
+    <copyright>Copyright © 2025</copyright>
     <productVersion>1.0.0.0</productVersion>
     <txtProductVersion>1.0.0.0</txtProductVersion>
-    <productName>Excel Processor</productName>
+    <productName>Excel工具集</productName>
     <companyName></companyName>
     <internalName>ExcelProcessor</internalName>
     <originalFilename>ExcelProcessor.exe</originalFilename>
@@ -37,10 +46,10 @@
     <language>SIMPLIFIED_CHINESE</language>
   </versionInfo>
   <messages>
-    <startupErr>An error occurred while starting the application.</startupErr>
-    <jreNotFoundErr>This application requires a Java Runtime Environment.</jreNotFoundErr>
-    <jreVersionErr>This application requires a Java Runtime Environment</jreVersionErr>
-    <launcherErr>The registry refers to a nonexistent Java Runtime Environment installation or the runtime is corrupted.</launcherErr>
+    <startupErr>启动应用程序时发生错误。</startupErr>
+    <jreNotFoundErr>此应用程序需要Java运行环境（JRE）。请访问 https://adoptium.net/ 下载安装。</jreNotFoundErr>
+    <jreVersionErr>此应用程序需要Java 8或更高版本。</jreVersionErr>
+    <launcherErr>注册表引用了不存在的Java运行环境，或运行时已损坏。</launcherErr>
   </messages>
   <splash>
     <timeout>60</timeout>
