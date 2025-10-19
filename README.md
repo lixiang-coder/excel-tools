@@ -369,8 +369,6 @@ launch4jc launch4j-config-largefile.xml
 文件 ≥200MB  → 使用 ExcelProcessor_LargeFile.exe
 ```
 
-📖 **详细说明**: 参见 [启动方式指南.md](启动方式指南.md)
-
 ---
 
 ## 测试数据生成器
@@ -419,8 +417,6 @@ java -cp target/excel-processor-1.0-SNAPSHOT.jar com.tools.TestDataGenerator 250
 - **内存占用**: <100MB（使用SXSSF流式写入）
 - **150MB文件**: 约780,000行，耗时3-5分钟
 - **输出位置**: 项目根目录，文件名带时间戳
-
-📖 **详细说明**: 参见 [TestDataGenerator使用说明.md](TestDataGenerator使用说明.md)
 
 ---
 
@@ -493,8 +489,6 @@ IOUtils.setByteArrayMaxOverride((int) maxArraySize);
 | 4GB RAM | 2.5GB | ~150MB | ~80万行 |
 | 8GB RAM | 6GB | ~250MB | ~130万行 |
 | 16GB RAM | 8GB | ~400MB | ~200万行 |
-
-📖 **详细说明**: 参见 [CLAUDE.md - Memory Optimization](CLAUDE.md#memory-optimization-implementation-内存优化实现)
 
 ---
 
@@ -801,9 +795,9 @@ mvn exec:java -Dexec.mainClass="com.xzy.ExcelTools"
 
 ## 联系方式
 
-- 📧 Email: [联系邮箱]
+- 📧 Email: [2894702202@qq.com]
 - 🐛 Issues: [GitHub Issues]
-- 📖 Wiki: [项目Wiki]
+- 📖 WX: [xzynet-top]
 
 ---
 
@@ -819,6 +813,6 @@ mvn exec:java -Dexec.mainClass="com.xzy.ExcelTools"
 
 **如果这个项目对您有帮助，请给一个⭐️Star⭐️支持一下！**
 
-Made with ❤️ by Excel工具集团队
+Made with ❤️ by  XZY & Course & Claude & Codex
 
 </div>
