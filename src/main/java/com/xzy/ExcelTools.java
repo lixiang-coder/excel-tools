@@ -1139,7 +1139,40 @@ public class ExcelTools {
             int result = fileChooser.showOpenDialog(mainFrame);
             if (result == JFileChooser.APPROVE_OPTION) {
                 currentTargetFile = fileChooser.getSelectedFile();
-                loadMappingHeaders(currentTargetFile, lookupList, fillList);
+                // 使用SwingWorker + 进度对话框加载表头，避免UI冻结
+                ProgressDialog progressDialog = createProgressDialog("加载表头");
+                SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
+                    @Override
+                    protected List<String> doInBackground() throws Exception {
+                        return readHeadersOnly(currentTargetFile);
+                    }
+
+                    @Override
+                    protected void done() {
+                        progressDialog.dialog.dispose();
+                        try {
+                            List<String> headers = get();
+                            DefaultListModel<String> lookupModel = new DefaultListModel<>();
+                            DefaultListModel<String> fillModel = new DefaultListModel<>();
+                            for (String header : headers) {
+                                lookupModel.addElement(header);
+                                fillModel.addElement(header);
+                            }
+                            lookupList.setModel(lookupModel);
+                            fillList.setModel(fillModel);
+                            statusLabel.setText("已加载 " + headers.size() + " 个表头");
+                            log("成功加载表头: " + currentTargetFile.getName());
+                        } catch (Exception ex) {
+                            log("加载表头时出错: " + ex.getMessage());
+                            JOptionPane.showMessageDialog(mainFrame,
+                                    "加载表头时出错: " + ex.getMessage(),
+                                    "错误",
+                                    JOptionPane.ERROR_MESSAGE);
+                        }
+                    }
+                };
+                worker.execute();
+                progressDialog.dialog.setVisible(true);
             }
         });
 
