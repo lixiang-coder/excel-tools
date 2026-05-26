@@ -18,10 +18,10 @@ import java.util.*;
 import java.awt.Color;
 
 /**
- * Curosr 实现
  * Excel跨表主键数据填充工具
- * 支持A表主键与B表主键逐行比对，数据填充，UI交互，进度条，日志
+ * @deprecated 已弃用独立运行模式，功能已整合到 ExcelTools 的 Tab 中
  */
+@Deprecated
 public class CrossSheetFiller {
     /**
      * 执行跨表主键数据填充（带进度监听）

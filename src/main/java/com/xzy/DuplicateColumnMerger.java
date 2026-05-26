@@ -21,9 +21,9 @@ import java.util.Set;
 
 /**
  * Excel工具类：按指定重复列合并多行数据。
- * 每个重复值只保留一行，其他列内容用英文竖线（|）拼接。
- * 支持大文件处理，适用于批量去重、合并等场景。
+ * @deprecated 已弃用独立运行模式，功能已整合到 ExcelTools 的 Tab 中
  */
+@Deprecated
 public class DuplicateColumnMerger {
     private static final String SEPARATOR = "|";
 
