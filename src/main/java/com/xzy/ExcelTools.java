@@ -8,12 +8,12 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
 import org.apache.poi.xssf.model.SharedStringsTable;
+import org.apache.poi.xssf.model.StylesTable;
 import org.apache.poi.xssf.streaming.SXSSFSheet;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
-import org.xml.sax.helpers.XMLReaderFactory;
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
@@ -30,6 +30,9 @@ import java.util.*;
 public class ExcelTools {
     private static final Logger logger = LogManager.getLogger(ExcelTools.class);
     private static final String OTHER_REMARK_SEPARATOR = "|";
+
+    // 使用逗号分隔的表头集合（不显示源表头名称）
+    private static final Set<String> COMMA_SEPARATED_HEADERS = new HashSet<>(Arrays.asList("手机号码"));
 
     // 配置常量
     private static final int MAX_FILE_SIZE_MB = 1000; // 最大文件大小（MB）
@@ -628,8 +631,8 @@ public class ExcelTools {
      */
     private List<String> readXLSXHeaders(File file) throws IOException {
         List<String> headers = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(file)) {
-            OPCPackage pkg = OPCPackage.open(fis);
+        try (FileInputStream fis = new FileInputStream(file);
+             OPCPackage pkg = OPCPackage.open(fis)) {
             XSSFReader reader = new XSSFReader(pkg);
             XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
             SharedStringsTable sst = (SharedStringsTable) reader.getSharedStringsTable();
@@ -637,13 +640,14 @@ public class ExcelTools {
             if (it.hasNext()) {
                 InputStream sheet = it.next();
                 try {
-                    XMLReader parser = XMLReaderFactory.createXMLReader();
+                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
+                            .newSAXParser().getXMLReader();
                     try {
                         parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
                         parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
                         parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
                     } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                        logger.warn("设置XML解析器特性时出错: " + e.getMessage());
+                        logger.error("设置XML解析器特性时出错: " + e.getMessage());
                     }
 
                     HeaderHandler handler = new HeaderHandler(sst);
@@ -656,8 +660,7 @@ public class ExcelTools {
                     sheet.close();
                 }
             }
-            pkg.close();
-        } catch (OpenXML4JException e) {
+        } catch (OpenXML4JException | javax.xml.parsers.ParserConfigurationException e) {
             throw new IOException("打开Excel文件时出错: " + e.getMessage(), e);
         }
         return headers;
@@ -667,8 +670,8 @@ public class ExcelTools {
      * 读取XLS文件的表头
      */
     private List<String> readXLSHeaders(File file) throws IOException {
-        try (FileInputStream fis = new FileInputStream(file)) {
-            Workbook workbook = WorkbookFactory.create(fis);
+        try (FileInputStream fis = new FileInputStream(file);
+             Workbook workbook = WorkbookFactory.create(fis)) {
             Sheet sheet = workbook.getSheetAt(0);
             Row headerRow = sheet.getRow(0);
 
@@ -681,7 +684,6 @@ public class ExcelTools {
                     }
                 }
             }
-            workbook.close();
             return headers;
         }
     }
@@ -741,6 +743,155 @@ public class ExcelTools {
 
         public List<String> getHeaders() {
             return headers;
+        }
+    }
+
+    /**
+     * SAX处理器，用于流式解析XLSX文件的全部数据（表头+数据行）
+     * 通过回调逐行处理，避免将全部数据加载到内存
+     */
+    private static class SheetDataHandler extends DefaultHandler {
+        private final SharedStringsTable sst;
+        private final List<CellStyle> cellStyles;
+        private final java.util.function.Consumer<List<String>> rowCallback;
+
+        private List<String> headers;
+        private boolean isFirstRow = true;
+        private String cellType = null;
+        private int cellStyleIndex = 0;
+        private int currentColIndex = 0;
+        private final TreeMap<Integer, String> currentRowData = new TreeMap<>();
+        private StringBuilder currentValue = new StringBuilder();
+        private boolean isCellValue = false;
+        private int totalRows = 0;
+
+        public SheetDataHandler(SharedStringsTable sst, List<CellStyle> cellStyles,
+                                java.util.function.Consumer<List<String>> rowCallback) {
+            this.sst = sst;
+            this.cellStyles = cellStyles;
+            this.rowCallback = rowCallback;
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName, Attributes attributes) {
+            if ("c".equals(qName)) {
+                String ref = attributes.getValue("r");
+                if (ref != null) {
+                    currentColIndex = parseColumnRef(ref);
+                }
+                cellType = attributes.getValue("t");
+                String styleStr = attributes.getValue("s");
+                cellStyleIndex = (styleStr != null) ? Integer.parseInt(styleStr) : 0;
+                isCellValue = true;
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            if (isCellValue) {
+                currentValue.append(ch, start, length);
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            if ("c".equals(qName)) {
+                isCellValue = false;
+                String value = currentValue.toString().trim();
+                if ("s".equals(cellType) && sst != null) {
+                    int idx = Integer.parseInt(value);
+                    value = sst.getItemAt(idx).getString();
+                } else if ("inlineStr".equals(cellType)) {
+                    // 内联字符串，直接使用
+                } else if (value != null && !value.isEmpty()) {
+                    // 数值类型，检查是否为日期
+                    if (cellStyleIndex > 0 && cellStyleIndex < cellStyles.size()) {
+                        CellStyle style = cellStyles.get(cellStyleIndex);
+                        if (style != null && DateUtil.isADateFormat(style.getDataFormat(), style.getDataFormatString())) {
+                            try {
+                                double excelDate = Double.parseDouble(value);
+                                value = DateUtil.getJavaDate(excelDate).toString();
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+                    }
+                }
+                currentRowData.put(currentColIndex, (value != null) ? value : "");
+                currentValue.setLength(0);
+                cellType = null;
+                cellStyleIndex = 0;
+            } else if ("row".equals(qName)) {
+                totalRows++;
+                List<String> row = new ArrayList<>();
+                if (!currentRowData.isEmpty()) {
+                    int maxCol = currentRowData.lastKey();
+                    for (int i = 0; i <= maxCol; i++) {
+                        row.add(currentRowData.getOrDefault(i, ""));
+                    }
+                }
+                currentRowData.clear();
+
+                if (isFirstRow) {
+                    headers = row;
+                    isFirstRow = false;
+                } else {
+                    rowCallback.accept(row);
+                }
+            }
+        }
+
+        public List<String> getHeaders() {
+            return headers;
+        }
+
+        public int getTotalRows() {
+            return totalRows;
+        }
+
+        private int parseColumnRef(String ref) {
+            int col = 0;
+            for (int i = 0; i < ref.length(); i++) {
+                char c = ref.charAt(i);
+                if (c >= 'A' && c <= 'Z') {
+                    col = col * 26 + (c - 'A' + 1);
+                } else {
+                    break;
+                }
+            }
+            return col - 1;
+        }
+    }
+
+    /**
+     * 使用SAX流式解析XLSX文件，逐行处理数据，避免OOM
+     */
+    private void processSheetDataWithSAX(File file, SharedStringsTable sst, List<CellStyle> cellStyles,
+                                          java.util.function.Consumer<List<String>> rowCallback) throws Exception {
+        try (FileInputStream fis = new FileInputStream(file);
+             OPCPackage pkg = OPCPackage.open(fis)) {
+            XSSFReader reader = new XSSFReader(pkg);
+            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
+
+            if (it.hasNext()) {
+                InputStream sheet = it.next();
+                try {
+                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
+                            .newSAXParser().getXMLReader();
+                    try {
+                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
+                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
+                        logger.error("设置XML解析器特性时出错: " + e.getMessage());
+                    }
+
+                    SheetDataHandler handler = new SheetDataHandler(sst, cellStyles, rowCallback);
+                    parser.setContentHandler(handler);
+                    parser.parse(new InputSource(sheet));
+                } finally {
+                    sheet.close();
+                }
+            }
         }
     }
 
@@ -1220,24 +1371,20 @@ public class ExcelTools {
         }
 
         // 创建进度对话框
-        JDialog progressDialog = createProgressDialog("处理中");
-        JLabel progressLabel = (JLabel) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(0);
-        JProgressBar progressBar = (JProgressBar) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(1);
+        ProgressDialog progressDialog = createProgressDialog("处理中");
+        JLabel progressLabel = progressDialog.label;
+        JProgressBar progressBar = progressDialog.progressBar;
 
         // 在后台线程中处理数据
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
             @Override
             protected Void doInBackground() throws Exception {
-                try (FileInputStream fis = new FileInputStream(inputFile);
-                     Workbook workbook = WorkbookFactory.create(fis);
-                     FileInputStream templateFis = new FileInputStream(templateFile);
+                // 读取模板文件的表头（模板文件通常较小，用POI读取即可）
+                List<String> templateHeaders;
+                try (FileInputStream templateFis = new FileInputStream(templateFile);
                      Workbook templateWorkbook = WorkbookFactory.create(templateFis)) {
-
-                    Sheet sheet = workbook.getSheetAt(0);
                     Sheet templateSheet = templateWorkbook.getSheetAt(0);
-
-                    // 获取模板文件的表头
-                    List<String> templateHeaders = new ArrayList<>();
+                    templateHeaders = new ArrayList<>();
                     Row templateHeaderRow = templateSheet.getRow(0);
                     if (templateHeaderRow != null) {
                         for (int i = 0; i < templateHeaderRow.getLastCellNum(); i++) {
@@ -1247,151 +1394,265 @@ public class ExcelTools {
                             }
                         }
                     }
+                }
 
-                    // 获取源文件的表头
-                    Map<String, Integer> sourceHeaderMap = new LinkedHashMap<>();
-                    Row headerRow = sheet.getRow(0);
-                    if (headerRow != null) {
-                        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                            Cell cell = headerRow.getCell(i);
-                            if (cell != null) {
-                                sourceHeaderMap.put(cell.getStringCellValue(), i);
-                            }
-                        }
+                // 将映射转换为HeaderMapping对象
+                List<HeaderMapping> headerMappings = new ArrayList<>();
+                Map<String, List<String>> targetToSourceMap = new HashMap<>();
+                for (Map.Entry<String, String> entry : mappings.entrySet()) {
+                    targetToSourceMap.computeIfAbsent(entry.getValue(), k -> new ArrayList<>()).add(entry.getKey());
+                }
+                for (Map.Entry<String, List<String>> entry : targetToSourceMap.entrySet()) {
+                    headerMappings.add(new HeaderMapping(entry.getValue(), entry.getKey()));
+                }
+
+                // 预建模板表头索引Map
+                Map<String, Integer> templateHeaderIndexMap = new HashMap<>();
+                for (int i = 0; i < templateHeaders.size(); i++) {
+                    templateHeaderIndexMap.put(templateHeaders.get(i), i);
+                }
+
+                // 使用SXSSFWorkbook流式写入输出
+                try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
+                    Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
+
+                    // 写入模板表头
+                    Row outputHeaderRow = outputSheet.createRow(0);
+                    for (int i = 0; i < templateHeaders.size(); i++) {
+                        Cell cell = outputHeaderRow.createCell(i);
+                        cell.setCellValue(templateHeaders.get(i));
                     }
 
-                    // 将简单映射转换为HeaderMapping对象
-                    List<HeaderMapping> headerMappings = new ArrayList<>();
-                    Map<String, List<String>> targetToSourceMap = new HashMap<>();
-
-                    // 首先按目标表头分组
-                    for (Map.Entry<String, String> entry : mappings.entrySet()) {
-                        String sourceHeader = entry.getKey();
-                        String targetHeader = entry.getValue();
-
-                        targetToSourceMap.computeIfAbsent(targetHeader, k -> new ArrayList<>()).add(sourceHeader);
-                    }
-
-                    // 然后创建HeaderMapping对象
-                    for (Map.Entry<String, List<String>> entry : targetToSourceMap.entrySet()) {
-                        String targetHeader = entry.getKey();
-                        List<String> sourceHeaders = entry.getValue();
-
-                        headerMappings.add(new HeaderMapping(sourceHeaders, targetHeader));
-                    }
-
-                    // 使用SXSSFWorkbook来处理大文件
-                    try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
-                        Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
-
-                        // 写入模板表头
-                        Row outputHeaderRow = outputSheet.createRow(0);
-                        for (int i = 0; i < templateHeaders.size(); i++) {
-                            Cell cell = outputHeaderRow.createCell(i);
-                            cell.setCellValue(templateHeaders.get(i));
-                        }
-
-                        // 处理数据行
-                        int rowNum = 1;
-                        int totalRows = sheet.getLastRowNum();
-                        int processedRows = 0;
-                        int batchSize = BATCH_SIZE; // 每批处理的行数
-
-                        // 显示开始处理的消息
+                    if (inputFile.getName().toLowerCase().endsWith(".xlsx")) {
+                        // XLSX文件：使用SAX流式读取，避免OOM
                         SwingUtilities.invokeLater(() -> {
-                            statusLabel.setText("正在处理数据...");
-                            log("开始处理数据，共 " + totalRows + " 行");
+                            statusLabel.setText("正在使用SAX流式处理数据...");
+                            log("开始流式处理XLSX文件");
                         });
 
-                        // 批量处理数据
-                        for (int i = 1; i <= totalRows; i += batchSize) {
-                            int endRow = Math.min(i + batchSize - 1, totalRows);
+                        // 先读取表头和单元格样式
+                        List<String> sourceHeaders;
+                        SharedStringsTable sst;
+                        List<CellStyle> cellStyles = new ArrayList<>();
+                        try (FileInputStream fis = new FileInputStream(inputFile);
+                             OPCPackage pkg = OPCPackage.open(fis)) {
+                            XSSFReader reader = new XSSFReader(pkg);
+                            sst = (SharedStringsTable) reader.getSharedStringsTable();
 
-                            for (int j = i; j <= endRow; j++) {
-                                Row sourceRow = sheet.getRow(j);
-                                if (sourceRow == null) continue;
+                            // 读取样式表
+                            try {
+                                StylesTable stylesTable = reader.getStylesTable();
+                                for (int i = 0; i < stylesTable.getNumCellStyles(); i++) {
+                                    cellStyles.add(stylesTable.getStyleAt(i));
+                                }
+                            } catch (Exception e) {
+                                logger.warn("无法读取样式表: " + e.getMessage());
+                            }
 
-                                Row outputRow = outputSheet.createRow(rowNum++);
+                            // 读取表头
+                            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
+                            if (it.hasNext()) {
+                                InputStream sheet = it.next();
+                                try {
+                                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
+                                            .newSAXParser().getXMLReader();
+                                    HeaderHandler handler = new HeaderHandler(sst);
+                                    parser.setContentHandler(handler);
+                                    parser.parse(new InputSource(sheet));
+                                    sourceHeaders = handler.getHeaders();
+                                } finally {
+                                    sheet.close();
+                                }
+                            } else {
+                                throw new IOException("源文件中没有找到工作表");
+                            }
+                        }
 
-                                // 根据映射规则处理每一行数据
-                                for (HeaderMapping mapping : headerMappings) {
-                                    if (mapping.isMerge()) {
-                                        // 处理需要合并的多个源表头
-                                        StringBuilder mergedValue = new StringBuilder();
-                                        for (String sourceHeader : mapping.getSourceHeaders()) {
-                                            Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
-                                            if (sourceIndex != null) {
-                                                Cell sourceCell = sourceRow.getCell(sourceIndex);
-                                                if (sourceCell != null) {
-                                                    String value = getCellValueAsString(sourceCell);
-                                                    if (!value.isEmpty()) {
-                                                        if (mergedValue.length() > 0) {
-                                                            // 根据格式类型选择分隔符
-                                                            mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ?
-                                                                "," : OTHER_REMARK_SEPARATOR);
-                                                        }
-                                                        // 根据格式类型决定是否添加源表头名称
-                                                        if (mapping.getFormatType() == HeaderMapping.FormatType.PIPE_SEPARATED) {
-                                                            mergedValue.append(sourceHeader).append("：");
-                                                        }
-                                                        mergedValue.append(value);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if (mergedValue.length() > 0) {
-                                            int targetColumnIndex = templateHeaders.indexOf(mapping.getTargetHeader());
-                                            if (targetColumnIndex >= 0) {
-                                                Cell targetCell = outputRow.createCell(targetColumnIndex);
-                                                targetCell.setCellValue(mergedValue.toString());
-                                            }
-                                        }
-                                    } else {
-                                        // 处理单个源表头
-                                        String sourceHeader = mapping.getSourceHeaders().get(0);
+                        // 构建源表头索引
+                        Map<String, Integer> sourceHeaderMap = new LinkedHashMap<>();
+                        for (int i = 0; i < sourceHeaders.size(); i++) {
+                            sourceHeaderMap.put(sourceHeaders.get(i), i);
+                        }
+
+                        SwingUtilities.invokeLater(() -> log("源表表头: " + sourceHeaders));
+
+                        // 使用SAX流式解析并逐行写入输出
+                        final int[] processedRows = {0};
+                        final int[] rowNum = {1};
+
+                        processSheetDataWithSAX(inputFile, sst, cellStyles, sourceRow -> {
+                            if (sourceRow.isEmpty()) return;
+
+                            Row outRow = outputSheet.createRow(rowNum[0]++);
+
+                            for (HeaderMapping mapping : headerMappings) {
+                                if (mapping.isMerge()) {
+                                    StringBuilder mergedValue = new StringBuilder();
+                                    for (String sourceHeader : mapping.getSourceHeaders()) {
                                         Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
-                                        if (sourceIndex != null) {
-                                            Cell sourceCell = sourceRow.getCell(sourceIndex);
-                                            if (sourceCell != null) {
-                                                String value = getCellValueAsString(sourceCell);
-                                                if (!value.isEmpty()) {
-                                                    int targetColumnIndex = templateHeaders.indexOf(mapping.getTargetHeader());
-                                                    if (targetColumnIndex >= 0) {
-                                                        Cell targetCell = outputRow.createCell(targetColumnIndex);
-                                                        targetCell.setCellValue(value);
-                                                    }
+                                        if (sourceIndex != null && sourceIndex < sourceRow.size()) {
+                                            String value = sourceRow.get(sourceIndex);
+                                            if (value != null && !value.isEmpty()) {
+                                                if (mergedValue.length() > 0) {
+                                                    mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ?
+                                                            "," : OTHER_REMARK_SEPARATOR);
                                                 }
+                                                if (mapping.getFormatType() == HeaderMapping.FormatType.PIPE_SEPARATED) {
+                                                    mergedValue.append(sourceHeader).append("：");
+                                                }
+                                                mergedValue.append(value);
+                                            }
+                                        }
+                                    }
+                                    if (mergedValue.length() > 0) {
+                                        int targetIdx = templateHeaderIndexMap.getOrDefault(mapping.getTargetHeader(), -1);
+                                        if (targetIdx >= 0) {
+                                            outRow.createCell(targetIdx).setCellValue(mergedValue.toString());
+                                        }
+                                    }
+                                } else {
+                                    String sourceHeader = mapping.getSourceHeaders().get(0);
+                                    Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
+                                    if (sourceIndex != null && sourceIndex < sourceRow.size()) {
+                                        String value = sourceRow.get(sourceIndex);
+                                        if (value != null && !value.isEmpty()) {
+                                            int targetIdx = templateHeaderIndexMap.getOrDefault(mapping.getTargetHeader(), -1);
+                                            if (targetIdx >= 0) {
+                                                outRow.createCell(targetIdx).setCellValue(value);
                                             }
                                         }
                                     }
                                 }
-
-                                processedRows++;
                             }
 
-                            // 更新进度
-                            final int progress = (int) ((processedRows * 100.0) / totalRows);
-                            SwingUtilities.invokeLater(() -> {
-                                progressBar.setIndeterminate(false);
-                                progressBar.setValue(progress);
-                                progressLabel.setText("正在处理数据... " + progress + "%");
-                            });
-
-                            // 清理临时文件
-                            ((SXSSFSheet)outputSheet).flushRows();
-                        }
+                            processedRows[0]++;
+                            if (processedRows[0] % BATCH_SIZE == 0) {
+                                try {
+                                    ((SXSSFSheet) outputSheet).flushRows();
+                                } catch (IOException e) {
+                                    throw new RuntimeException("刷新行数据失败", e);
+                                }
+                                final int pct = processedRows[0];
+                                SwingUtilities.invokeLater(() -> {
+                                    progressBar.setIndeterminate(false);
+                                    progressBar.setValue(Math.min(99, pct / 100));
+                                    progressLabel.setText("正在处理数据... 已处理 " + pct + " 行");
+                                });
+                            }
+                        });
 
                         // 保存文件
                         try (FileOutputStream fos = new FileOutputStream(outputFile)) {
                             outputWorkbook.write(fos);
                         }
 
-                        // 显示处理完成的消息
-                        final int finalProcessedRows = processedRows;
+                        final int total = processedRows[0];
                         SwingUtilities.invokeLater(() -> {
-                            statusLabel.setText("处理完成，共处理 " + finalProcessedRows + " 行数据");
-                            log("处理完成，共处理 " + finalProcessedRows + " 行数据");
+                            progressBar.setValue(100);
+                            statusLabel.setText("处理完成，共处理 " + total + " 行数据");
+                            log("处理完成，共处理 " + total + " 行数据");
                         });
+
+                    } else {
+                        // XLS文件：使用POI读取（XLS文件通常较小）
+                        try (FileInputStream fis = new FileInputStream(inputFile);
+                             Workbook workbook = WorkbookFactory.create(fis)) {
+                            Sheet sheet = workbook.getSheetAt(0);
+
+                            Map<String, Integer> sourceHeaderMap = new LinkedHashMap<>();
+                            Row headerRow = sheet.getRow(0);
+                            if (headerRow != null) {
+                                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                                    Cell cell = headerRow.getCell(i);
+                                    if (cell != null) {
+                                        sourceHeaderMap.put(cell.getStringCellValue(), i);
+                                    }
+                                }
+                            }
+
+                            int totalRows = sheet.getLastRowNum();
+                            int processedRows = 0;
+                            int rowNum = 1;
+
+                            SwingUtilities.invokeLater(() -> {
+                                statusLabel.setText("正在处理数据...");
+                                log("开始处理数据，共 " + totalRows + " 行");
+                            });
+
+                            for (int i = 1; i <= totalRows; i += BATCH_SIZE) {
+                                int endRow = Math.min(i + BATCH_SIZE - 1, totalRows);
+                                for (int j = i; j <= endRow; j++) {
+                                    Row sourceRow = sheet.getRow(j);
+                                    if (sourceRow == null) continue;
+                                    Row outRow = outputSheet.createRow(rowNum++);
+
+                                    for (HeaderMapping mapping : headerMappings) {
+                                        if (mapping.isMerge()) {
+                                            StringBuilder mergedValue = new StringBuilder();
+                                            for (String sourceHeader : mapping.getSourceHeaders()) {
+                                                Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
+                                                if (sourceIndex != null) {
+                                                    Cell sourceCell = sourceRow.getCell(sourceIndex);
+                                                    if (sourceCell != null) {
+                                                        String value = getCellValueAsString(sourceCell);
+                                                        if (!value.isEmpty()) {
+                                                            if (mergedValue.length() > 0) {
+                                                                mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ?
+                                                                        "," : OTHER_REMARK_SEPARATOR);
+                                                            }
+                                                            if (mapping.getFormatType() == HeaderMapping.FormatType.PIPE_SEPARATED) {
+                                                                mergedValue.append(sourceHeader).append("：");
+                                                            }
+                                                            mergedValue.append(value);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if (mergedValue.length() > 0) {
+                                                int targetIdx = templateHeaderIndexMap.getOrDefault(mapping.getTargetHeader(), -1);
+                                                if (targetIdx >= 0) {
+                                                    outRow.createCell(targetIdx).setCellValue(mergedValue.toString());
+                                                }
+                                            }
+                                        } else {
+                                            String sourceHeader = mapping.getSourceHeaders().get(0);
+                                            Integer sourceIndex = sourceHeaderMap.get(sourceHeader);
+                                            if (sourceIndex != null) {
+                                                Cell sourceCell = sourceRow.getCell(sourceIndex);
+                                                if (sourceCell != null) {
+                                                    String value = getCellValueAsString(sourceCell);
+                                                    if (!value.isEmpty()) {
+                                                        int targetIdx = templateHeaderIndexMap.getOrDefault(mapping.getTargetHeader(), -1);
+                                                        if (targetIdx >= 0) {
+                                                            outRow.createCell(targetIdx).setCellValue(value);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    processedRows++;
+                                }
+
+                                final int progress = (int) ((processedRows * 100.0) / totalRows);
+                                SwingUtilities.invokeLater(() -> {
+                                    progressBar.setIndeterminate(false);
+                                    progressBar.setValue(progress);
+                                    progressLabel.setText("正在处理数据... " + progress + "%");
+                                });
+                                ((SXSSFSheet) outputSheet).flushRows();
+                            }
+
+                            try (FileOutputStream fos = new FileOutputStream(outputFile)) {
+                                outputWorkbook.write(fos);
+                            }
+
+                            final int finalProcessedRows = processedRows;
+                            SwingUtilities.invokeLater(() -> {
+                                statusLabel.setText("处理完成，共处理 " + finalProcessedRows + " 行数据");
+                                log("处理完成，共处理 " + finalProcessedRows + " 行数据");
+                            });
+                        }
                     }
                 }
                 return null;
@@ -1399,12 +1660,12 @@ public class ExcelTools {
 
             @Override
             protected void done() {
-                progressDialog.dispose();
+                progressDialog.dialog.dispose();
             }
         };
 
         worker.execute();
-        progressDialog.setVisible(true);
+        progressDialog.dialog.setVisible(true);
 
         try {
             worker.get();
@@ -1505,7 +1766,7 @@ public class ExcelTools {
             this.sourceHeaders = new ArrayList<>(sourceHeaders);
             this.targetHeader = targetHeader;
             // 根据目标表头名称确定格式类型
-            this.formatType = targetHeader.equals("手机号码") ?
+            this.formatType = COMMA_SEPARATED_HEADERS.contains(targetHeader) ?
                 FormatType.COMMA_SEPARATED : FormatType.PIPE_SEPARATED;
         }
 
@@ -1554,9 +1815,24 @@ public class ExcelTools {
     }
 
     /**
+     * 进度对话框包装类，避免脆弱的 getComponent() 层级引用
+     */
+    private static class ProgressDialog {
+        final JDialog dialog;
+        final JLabel label;
+        final JProgressBar progressBar;
+
+        ProgressDialog(JDialog dialog, JLabel label, JProgressBar progressBar) {
+            this.dialog = dialog;
+            this.label = label;
+            this.progressBar = progressBar;
+        }
+    }
+
+    /**
      * 创建进度对话框
      */
-    private JDialog createProgressDialog(String title) {
+    private ProgressDialog createProgressDialog(String title) {
         JDialog dialog = new JDialog(mainFrame, title, true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         dialog.setResizable(false);
@@ -1576,7 +1852,7 @@ public class ExcelTools {
         dialog.pack();
         dialog.setLocationRelativeTo(mainFrame);
 
-        return dialog;
+        return new ProgressDialog(dialog, label, progressBar);
     }
 
     /**
@@ -1759,7 +2035,7 @@ public class ExcelTools {
             if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
                 aPath.setText(fc.getSelectedFile().getAbsolutePath());
                 logArea.append("已选择源表: " + aPath.getText() + "\n");
-                JDialog progressDialog = createProgressDialog("加载源表表头");
+                ProgressDialog progressDialog = createProgressDialog("加载源表表头");
                 SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                     java.util.List<String> headers = null;
                     @Override
@@ -1773,7 +2049,7 @@ public class ExcelTools {
                     }
                     @Override
                     protected void done() {
-                        progressDialog.dispose();
+                        progressDialog.dialog.dispose();
                         if (headers != null) {
                             aHeadersArea.setText(String.join(", ", headers));
                             aKeyCombo.removeAllItems();
@@ -1792,7 +2068,7 @@ public class ExcelTools {
                     }
                 };
                 worker.execute();
-                progressDialog.setVisible(true);
+                progressDialog.dialog.setVisible(true);
             }
         });
         selB.addActionListener(e -> {
@@ -1801,7 +2077,7 @@ public class ExcelTools {
             if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
                 bPath.setText(fc.getSelectedFile().getAbsolutePath());
                 logArea.append("已选择目标表: " + bPath.getText() + "\n");
-                JDialog progressDialog = createProgressDialog("加载目标表表头");
+                ProgressDialog progressDialog = createProgressDialog("加载目标表表头");
                 SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                     java.util.List<String> headers = null;
                     @Override
@@ -1815,7 +2091,7 @@ public class ExcelTools {
                     }
                     @Override
                     protected void done() {
-                        progressDialog.dispose();
+                        progressDialog.dialog.dispose();
                         if (headers != null) {
                             bHeadersArea.setText(String.join(", ", headers));
                             bKeyCombo.removeAllItems();
@@ -1834,7 +2110,7 @@ public class ExcelTools {
                     }
                 };
                 worker.execute();
-                progressDialog.setVisible(true);
+                progressDialog.dialog.setVisible(true);
             }
         });
         runBtn.addActionListener(e -> {
@@ -1865,9 +2141,9 @@ public class ExcelTools {
                 JOptionPane.showMessageDialog(mainPanel, "请先选择所有文件和表头映射项！", "提示", JOptionPane.WARNING_MESSAGE);
                 return;
             }
-            JDialog progressDialog = createProgressDialog("处理中");
-            final JLabel progressLabel = (JLabel) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(0);
-            final JProgressBar progressBar = (JProgressBar) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(1);
+            ProgressDialog progressDialog = createProgressDialog("处理中");
+            final JLabel progressLabel = progressDialog.label;
+            final JProgressBar progressBar = progressDialog.progressBar;
             SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
                 @Override
                 protected Void doInBackground() {
@@ -1893,11 +2169,11 @@ public class ExcelTools {
                 }
                 @Override
                 protected void done() {
-                    progressDialog.dispose();
+                    progressDialog.dialog.dispose();
                 }
             };
             worker.execute();
-            progressDialog.setVisible(true);
+            progressDialog.dialog.setVisible(true);
             try {
                 worker.get();
                 logArea.append("处理完成: " + outPathVal + "\n");
@@ -1961,7 +2237,7 @@ public class ExcelTools {
             if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
                 inputPath.setText(fc.getSelectedFile().getAbsolutePath());
                 logArea.append("已选择输入: " + inputPath.getText() + "\n");
-                JDialog progressDialog = createProgressDialog("加载输入文件表头");
+                ProgressDialog progressDialog = createProgressDialog("加载输入文件表头");
                 SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                     java.util.List<String> headers = null;
                     @Override
@@ -1975,7 +2251,7 @@ public class ExcelTools {
                     }
                     @Override
                     protected void done() {
-                        progressDialog.dispose();
+                        progressDialog.dialog.dispose();
                         if (headers != null) {
                             customerIdCombo.removeAllItems();
                             mergeColsModel.clear();
@@ -1991,7 +2267,7 @@ public class ExcelTools {
                     }
                 };
                 worker.execute();
-                progressDialog.setVisible(true);
+                progressDialog.dialog.setVisible(true);
             }
         });
         runBtn.addActionListener(e -> {
@@ -2020,9 +2296,9 @@ public class ExcelTools {
             }
             String customerIdCol = (String) customerIdCombo.getSelectedItem();
             java.util.List<String> mergeCols = mergeColsList.getSelectedValuesList();
-            JDialog progressDialog = createProgressDialog("处理中");
-            final JLabel progressLabel = (JLabel) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(0);
-            final JProgressBar progressBar = (JProgressBar) ((JPanel)progressDialog.getContentPane().getComponent(0)).getComponent(1);
+            ProgressDialog progressDialog = createProgressDialog("处理中");
+            final JLabel progressLabel = progressDialog.label;
+            final JProgressBar progressBar = progressDialog.progressBar;
             SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
                 @Override
                 protected Void doInBackground() {
@@ -2044,11 +2320,11 @@ public class ExcelTools {
                 }
                 @Override
                 protected void done() {
-                    progressDialog.dispose();
+                    progressDialog.dialog.dispose();
                 }
             };
             worker.execute();
-            progressDialog.setVisible(true);
+            progressDialog.dialog.setVisible(true);
             try {
                 worker.get();
                 logArea.append("处理完成: " + outPath + "\n");
