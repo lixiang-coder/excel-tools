@@ -1,8 +1,13 @@
 package com.xzy;
 
+import com.xzy.model.AppContext;
+import com.xzy.model.HeaderMapping;
+import com.xzy.model.ProgressDialog;
+import com.xzy.panel.CrossSheetPanel;
+import com.xzy.panel.DuplicateColPanel;
+import com.xzy.util.ExcelUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.IOUtils;
@@ -14,13 +19,13 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
+
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
-import java.awt.Color;
 import java.io.*;
-import java.util.List;
 import java.util.*;
+import java.util.List;
 
 /**
  * 最终版
@@ -30,9 +35,6 @@ import java.util.*;
 public class ExcelTools {
     private static final Logger logger = LogManager.getLogger(ExcelTools.class);
     private static final String OTHER_REMARK_SEPARATOR = "|";
-
-    // 使用逗号分隔的表头集合（不显示源表头名称）
-    private static final Set<String> COMMA_SEPARATED_HEADERS = new HashSet<>(Arrays.asList("手机号码"));
 
     // 配置常量
     private static final int MAX_FILE_SIZE_MB = 1000; // 最大文件大小（MB）
@@ -126,10 +128,11 @@ public class ExcelTools {
         mainFrame.setVisible(true);
 
         // 集成跨表主键填充工具
-        JPanel crossSheetPanel = createCrossSheetPanel(logArea);
+        AppContext ctx = new AppContext(mainFrame, logArea, statusLabel);
+        JPanel crossSheetPanel = new CrossSheetPanel(ctx).createPanel();
         tabbedPane.addTab("跨表主键填充工具", crossSheetPanel);
         // 集成重复列工具
-        JPanel duplicateColPanel = createDuplicateColPanel(logArea);
+        JPanel duplicateColPanel = new DuplicateColPanel(ctx).createPanel();
         tabbedPane.addTab("重复列工具", duplicateColPanel);
     }
 
@@ -616,79 +619,6 @@ public class ExcelTools {
     }
 
     /**
-     * 使用SAX模式只读取Excel文件的表头行
-     */
-    private List<String> readHeadersOnly(File file) throws IOException {
-        if (file.getName().toLowerCase().endsWith(".xlsx")) {
-            return readXLSXHeaders(file);
-        } else {
-            return readXLSHeaders(file);
-        }
-    }
-
-    /**
-     * 使用SAX模式读取XLSX文件的表头
-     */
-    private List<String> readXLSXHeaders(File file) throws IOException {
-        List<String> headers = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(file);
-             OPCPackage pkg = OPCPackage.open(fis)) {
-            XSSFReader reader = new XSSFReader(pkg);
-            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
-            SharedStringsTable sst = (SharedStringsTable) reader.getSharedStringsTable();
-
-            if (it.hasNext()) {
-                InputStream sheet = it.next();
-                try {
-                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
-                            .newSAXParser().getXMLReader();
-                    try {
-                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
-                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                        logger.error("设置XML解析器特性时出错: " + e.getMessage());
-                    }
-
-                    HeaderHandler handler = new HeaderHandler(sst);
-                    parser.setContentHandler(handler);
-                    parser.parse(new InputSource(sheet));
-                    headers = handler.getHeaders();
-                } catch (SAXException e) {
-                    throw new IOException("解析Excel文件时出错: " + e.getMessage(), e);
-                } finally {
-                    sheet.close();
-                }
-            }
-        } catch (OpenXML4JException | javax.xml.parsers.ParserConfigurationException e) {
-            throw new IOException("打开Excel文件时出错: " + e.getMessage(), e);
-        }
-        return headers;
-    }
-
-    /**
-     * 读取XLS文件的表头
-     */
-    private List<String> readXLSHeaders(File file) throws IOException {
-        try (FileInputStream fis = new FileInputStream(file);
-             Workbook workbook = WorkbookFactory.create(fis)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
-
-            List<String> headers = new ArrayList<>();
-            if (headerRow != null) {
-                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                    Cell cell = headerRow.getCell(i);
-                    if (cell != null) {
-                        headers.add(cell.getStringCellValue().trim());
-                    }
-                }
-            }
-            return headers;
-        }
-    }
-
-    /**
      * SAX处理器，用于解析XLSX文件的表头，支持共享字符串
      */
     private static class HeaderHandler extends DefaultHandler {
@@ -882,7 +812,7 @@ public class ExcelTools {
                         parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
                         parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
                     } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                        logger.error("设置XML解析器特性时出错: " + e.getMessage());
+                        throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
                     }
 
                     SheetDataHandler handler = new SheetDataHandler(sst, cellStyles, rowCallback);
@@ -926,7 +856,7 @@ public class ExcelTools {
                         progressLabel.setText("正在加载源数据文件表头...");
                     });
 
-                    List<String> sourceHeaders = readHeadersOnly(new File(inputFilePath));
+                    List<String> sourceHeaders = ExcelUtils.readHeadersOnly(new File(inputFilePath));
 
                     // 更新源数据表头列表
                     SwingUtilities.invokeLater(() -> {
@@ -942,7 +872,7 @@ public class ExcelTools {
                         progressLabel.setText("正在加载模板文件表头...");
                     });
 
-                    List<String> templateHeaders = readHeadersOnly(new File(templateFilePath));
+                    List<String> templateHeaders = ExcelUtils.readHeadersOnly(new File(templateFilePath));
 
                     // 更新模板表头列表
                     SwingUtilities.invokeLater(() -> {
@@ -1091,8 +1021,8 @@ public class ExcelTools {
                 Cell targetCell = row.getCell(targetIndex);
 
                 if (sourceCell != null && targetCell != null) {
-                    String sourceValue = getCellValueAsString(sourceCell);
-                    String targetValue = getCellValueAsString(targetCell);
+                    String sourceValue = ExcelUtils.getCellValueAsString(sourceCell);
+                    String targetValue = ExcelUtils.getCellValueAsString(targetCell);
 
                     if (!sourceValue.isEmpty() && !targetValue.isEmpty()) {
                         mappingRelations.put(sourceValue, targetValue);
@@ -1140,11 +1070,11 @@ public class ExcelTools {
             if (result == JFileChooser.APPROVE_OPTION) {
                 currentTargetFile = fileChooser.getSelectedFile();
                 // 使用SwingWorker + 进度对话框加载表头，避免UI冻结
-                ProgressDialog progressDialog = createProgressDialog("加载表头");
+                ProgressDialog progressDialog = ProgressDialog.create(mainFrame,"加载表头");
                 SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
                     @Override
                     protected List<String> doInBackground() throws Exception {
-                        return readHeadersOnly(currentTargetFile);
+                        return ExcelUtils.readHeadersOnly(currentTargetFile);
                     }
 
                     @Override
@@ -1212,7 +1142,7 @@ public class ExcelTools {
                             (!fileChooser.getSelectedFile().getName().toLowerCase().endsWith(".xlsx") ? ".xlsx" : "")
             );
 
-            ProgressDialog progressDialog = createProgressDialog("处理中");
+            ProgressDialog progressDialog = ProgressDialog.create(mainFrame,"处理中");
 
             // 构建反向映射（value -> key），避免每行都遍历
             Map<String, String> reverseMapping = new HashMap<>();
@@ -1287,6 +1217,13 @@ public class ExcelTools {
                 try {
                     XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
                             .newSAXParser().getXMLReader();
+                    try {
+                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
+                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
+                        throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
+                    }
                     HeaderHandler handler = new HeaderHandler(sst);
                     parser.setContentHandler(handler);
                     parser.parse(new InputSource(sheet));
@@ -1437,7 +1374,7 @@ public class ExcelTools {
                     Cell cell = headerRow.getCell(i);
                     if (cell != null) {
                         Cell outputCell = outputHeaderRow.createCell(i);
-                        copyCellValue(cell, outputCell);
+                        ExcelUtils.copyCellValue(cell, outputCell);
                     }
                 }
 
@@ -1455,13 +1392,13 @@ public class ExcelTools {
                         Cell cell = row.getCell(j);
                         if (cell != null) {
                             Cell outputCell = outputRow.createCell(j);
-                            copyCellValue(cell, outputCell);
+                            ExcelUtils.copyCellValue(cell, outputCell);
                         }
                     }
 
                     Cell lookupCell = row.getCell(lookupIndex);
                     if (lookupCell != null) {
-                        String lookupValue = getCellValueAsString(lookupCell);
+                        String lookupValue = ExcelUtils.getCellValueAsString(lookupCell);
 
                         Cell outputFillCell = outputRow.getCell(fillIndex);
                         if (outputFillCell == null) {
@@ -1529,7 +1466,7 @@ public class ExcelTools {
         }
 
         // 创建进度对话框
-        ProgressDialog progressDialog = createProgressDialog("处理中");
+        ProgressDialog progressDialog = ProgressDialog.create(mainFrame,"处理中");
         JLabel progressLabel = progressDialog.label;
         JProgressBar progressBar = progressDialog.progressBar;
 
@@ -1614,6 +1551,13 @@ public class ExcelTools {
                                 try {
                                     XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
                                             .newSAXParser().getXMLReader();
+                                    try {
+                                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+                                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
+                                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+                                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
+                                        throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
+                                    }
                                     HeaderHandler handler = new HeaderHandler(sst);
                                     parser.setContentHandler(handler);
                                     parser.parse(new InputSource(sheet));
@@ -1752,7 +1696,7 @@ public class ExcelTools {
                                                 if (sourceIndex != null) {
                                                     Cell sourceCell = sourceRow.getCell(sourceIndex);
                                                     if (sourceCell != null) {
-                                                        String value = getCellValueAsString(sourceCell);
+                                                        String value = ExcelUtils.getCellValueAsString(sourceCell);
                                                         if (!value.isEmpty()) {
                                                             if (mergedValue.length() > 0) {
                                                                 mergedValue.append(mapping.getFormatType() == HeaderMapping.FormatType.COMMA_SEPARATED ?
@@ -1778,7 +1722,7 @@ public class ExcelTools {
                                             if (sourceIndex != null) {
                                                 Cell sourceCell = sourceRow.getCell(sourceIndex);
                                                 if (sourceCell != null) {
-                                                    String value = getCellValueAsString(sourceCell);
+                                                    String value = ExcelUtils.getCellValueAsString(sourceCell);
                                                     if (!value.isEmpty()) {
                                                         int targetIdx = templateHeaderIndexMap.getOrDefault(mapping.getTargetHeader(), -1);
                                                         if (targetIdx >= 0) {
@@ -1833,117 +1777,7 @@ public class ExcelTools {
         }
     }
 
-    private String getCellValueAsString(Cell cell) {
-        if (cell == null) {
-            return "";
-        }
 
-        switch (cell.getCellType()) {
-            case STRING:
-                return cell.getStringCellValue().trim();
-            case NUMERIC:
-                if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getDateCellValue().toString();
-                }
-                // 对于数值类型，直接返回字符串形式
-                double value = cell.getNumericCellValue();
-                // 检查是否为整数
-                if (value == Math.floor(value)) {
-                    return String.format("%.0f", value);
-                }
-                return String.valueOf(value);
-            case BOOLEAN:
-                return String.valueOf(cell.getBooleanCellValue());
-            case FORMULA:
-                // 对于公式，获取其计算结果
-                try {
-                    switch (cell.getCachedFormulaResultType()) {
-                        case STRING:
-                            return cell.getStringCellValue().trim();
-                        case NUMERIC:
-                            if (DateUtil.isCellDateFormatted(cell)) {
-                                return cell.getDateCellValue().toString();
-                            }
-                            double formulaValue = cell.getNumericCellValue();
-                            if (formulaValue == Math.floor(formulaValue)) {
-                                return String.format("%.0f", formulaValue);
-                            }
-                            return String.valueOf(formulaValue);
-                        case BOOLEAN:
-                            return String.valueOf(cell.getBooleanCellValue());
-                        default:
-                            return "";
-                    }
-                } catch (Exception e) {
-                    logger.warn("获取公式计算结果时出错: " + e.getMessage());
-                    return "";
-                }
-            default:
-                return "";
-        }
-    }
-
-    private void copyCellValue(Cell sourceCell, Cell targetCell) {
-        switch (sourceCell.getCellType()) {
-            case STRING:
-                targetCell.setCellValue(sourceCell.getStringCellValue());
-                break;
-            case NUMERIC:
-                if (DateUtil.isCellDateFormatted(sourceCell)) {
-                    targetCell.setCellValue(sourceCell.getDateCellValue());
-                } else {
-                    targetCell.setCellValue(sourceCell.getNumericCellValue());
-                }
-                break;
-            case BOOLEAN:
-                targetCell.setCellValue(sourceCell.getBooleanCellValue());
-                break;
-            case FORMULA:
-                targetCell.setCellFormula(sourceCell.getCellFormula());
-                break;
-            case BLANK:
-                targetCell.setBlank();
-                break;
-            case ERROR:
-                targetCell.setCellErrorValue(sourceCell.getErrorCellValue());
-                break;
-        }
-    }
-
-    public static class HeaderMapping {
-        private final List<String> sourceHeaders;  // 源表头（表A）
-        private final String targetHeader;         // 目标表头（表B）
-        private final FormatType formatType;       // 格式类型
-
-        public enum FormatType {
-            COMMA_SEPARATED,    // 使用逗号分隔，不显示源表头
-            PIPE_SEPARATED      // 使用竖线分隔，显示源表头
-        }
-
-        public HeaderMapping(List<String> sourceHeaders, String targetHeader) {
-            this.sourceHeaders = new ArrayList<>(sourceHeaders);
-            this.targetHeader = targetHeader;
-            // 根据目标表头名称确定格式类型
-            this.formatType = COMMA_SEPARATED_HEADERS.contains(targetHeader) ?
-                FormatType.COMMA_SEPARATED : FormatType.PIPE_SEPARATED;
-        }
-
-        public List<String> getSourceHeaders() {
-            return new ArrayList<>(sourceHeaders);
-        }
-
-        public String getTargetHeader() {
-            return targetHeader;
-        }
-
-        public boolean isMerge() {
-            return sourceHeaders.size() > 1;
-        }
-
-        public FormatType getFormatType() {
-            return formatType;
-        }
-    }
 
     /**
      * 验证文件是否有效
@@ -1972,46 +1806,6 @@ public class ExcelTools {
         return lastDotIndex > 0 ? fileName.substring(lastDotIndex + 1) : "";
     }
 
-    /**
-     * 进度对话框包装类，避免脆弱的 getComponent() 层级引用
-     */
-    private static class ProgressDialog {
-        final JDialog dialog;
-        final JLabel label;
-        final JProgressBar progressBar;
-
-        ProgressDialog(JDialog dialog, JLabel label, JProgressBar progressBar) {
-            this.dialog = dialog;
-            this.label = label;
-            this.progressBar = progressBar;
-        }
-    }
-
-    /**
-     * 创建进度对话框
-     */
-    private ProgressDialog createProgressDialog(String title) {
-        JDialog dialog = new JDialog(mainFrame, title, true);
-        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        dialog.setResizable(false);
-        dialog.setUndecorated(false);
-
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-        JLabel label = new JLabel("正在处理...");
-        JProgressBar progressBar = new JProgressBar();
-        progressBar.setIndeterminate(true);
-
-        panel.add(label, BorderLayout.NORTH);
-        panel.add(progressBar, BorderLayout.CENTER);
-
-        dialog.add(panel);
-        dialog.pack();
-        dialog.setLocationRelativeTo(mainFrame);
-
-        return new ProgressDialog(dialog, label, progressBar);
-    }
 
     /**
      * 显示错误消息
@@ -2048,459 +1842,14 @@ public class ExcelTools {
         return chooser;
     }
 
-    // 跨表主键填充工具 tab
-    private JPanel createCrossSheetPanel(JTextArea logArea) {
-        java.awt.Font uiFont = new java.awt.Font("Microsoft YaHei", java.awt.Font.PLAIN, 16);
-        JPanel filePanel = new JPanel(new GridBagLayout());
-        filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 8, 8, 8);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.weightx = 1;
-        JTextField aPath = new JTextField();
-        JTextField bPath = new JTextField();
-        aPath.setEditable(false);
-        bPath.setEditable(false);
-        JButton selA = new JButton("选择源表");
-        JButton selB = new JButton("选择目标表");
-        java.awt.Font btnFont = new java.awt.Font("Microsoft YaHei", java.awt.Font.BOLD, 16);
-        selA.setFont(btnFont);
-        selB.setFont(btnFont);
-        selA.setBorderPainted(false);
-        selB.setBorderPainted(false);
-        selA.setFocusPainted(false);
-        selB.setFocusPainted(false);
-        selA.setOpaque(true);
-        selB.setOpaque(true);
-        java.awt.Color blue = new java.awt.Color(66, 133, 244);
-        java.awt.Color grayBg = new java.awt.Color(220, 220, 220);
-        java.awt.Color grayFont = new java.awt.Color(120, 120, 120);
-        java.util.function.BiConsumer<JButton, Boolean> setButtonVisualEnabled = (btn, enabled) -> {
-            if (enabled) {
-                btn.setBackground(blue);
-                btn.setForeground(Color.WHITE);
-            } else {
-                btn.setBackground(grayBg);
-                btn.setForeground(grayFont);
-            }
-            btn.setBorder(BorderFactory.createEmptyBorder());
-            btn.setFocusPainted(false);
-            btn.setOpaque(true);
-        };
-        setButtonVisualEnabled.accept(selA, true);
-        setButtonVisualEnabled.accept(selB, true);
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.gridwidth = 1;
-        filePanel.add(new JLabel("源表路径:"), gbc);
-        gbc.gridx = 1;
-        gbc.gridy = 0;
-        gbc.gridwidth = 2;
-        filePanel.add(aPath, gbc);
-        gbc.gridx = 3;
-        gbc.gridy = 0;
-        gbc.gridwidth = 1;
-        filePanel.add(selA, gbc);
-        gbc.gridx = 0;
-        gbc.gridy = 1;
-        gbc.gridwidth = 1;
-        filePanel.add(new JLabel("目标表路径:"), gbc);
-        gbc.gridx = 1;
-        gbc.gridy = 1;
-        gbc.gridwidth = 2;
-        filePanel.add(bPath, gbc);
-        gbc.gridx = 3;
-        gbc.gridy = 1;
-        gbc.gridwidth = 1;
-        filePanel.add(selB, gbc);
-
-        JPanel headerPanel = new JPanel(new GridLayout(2, 1, 5, 5));
-        headerPanel.setBorder(BorderFactory.createTitledBorder("表头展示区"));
-        JTextArea aHeadersArea = new JTextArea(2, 40);
-        aHeadersArea.setEditable(false);
-        aHeadersArea.setLineWrap(true);
-        aHeadersArea.setBorder(BorderFactory.createTitledBorder("源表表头"));
-        JScrollPane aHeadersScroll = new JScrollPane(aHeadersArea);
-        JTextArea bHeadersArea = new JTextArea(2, 40);
-        bHeadersArea.setEditable(false);
-        bHeadersArea.setLineWrap(true);
-        bHeadersArea.setBorder(BorderFactory.createTitledBorder("目标表表头"));
-        JScrollPane bHeadersScroll = new JScrollPane(bHeadersArea);
-        headerPanel.add(aHeadersScroll);
-        headerPanel.add(bHeadersScroll);
-
-        JPanel mapPanel = new JPanel(new GridBagLayout());
-        mapPanel.setBorder(BorderFactory.createTitledBorder("表头映射区"));
-        JComboBox<String> aKeyCombo = new JComboBox<>();
-        JComboBox<String> aValCombo = new JComboBox<>();
-        JComboBox<String> bKeyCombo = new JComboBox<>();
-        JComboBox<String> bValCombo = new JComboBox<>();
-        aKeyCombo.setFont(uiFont);
-        aValCombo.setFont(uiFont);
-        bKeyCombo.setFont(uiFont);
-        bValCombo.setFont(uiFont);
-        aKeyCombo.setPreferredSize(new Dimension(180, 32));
-        aValCombo.setPreferredSize(new Dimension(180, 32));
-        bKeyCombo.setPreferredSize(new Dimension(180, 32));
-        bValCombo.setPreferredSize(new Dimension(180, 32));
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.gridwidth = 1;
-        mapPanel.add(new JLabel("源表匹配表头:"), gbc);
-        gbc.gridx = 1;
-        gbc.gridy = 0;
-        mapPanel.add(aKeyCombo, gbc);
-        gbc.gridx = 2;
-        gbc.gridy = 0;
-        mapPanel.add(new JLabel("源表数据表头:"), gbc);
-        gbc.gridx = 3;
-        gbc.gridy = 0;
-        mapPanel.add(aValCombo, gbc);
-        gbc.gridx = 0;
-        gbc.gridy = 1;
-        mapPanel.add(new JLabel("目标表匹配表头:"), gbc);
-        gbc.gridx = 1;
-        gbc.gridy = 1;
-        mapPanel.add(bKeyCombo, gbc);
-        gbc.gridx = 2;
-        gbc.gridy = 1;
-        mapPanel.add(new JLabel("目标表填充表头:"), gbc);
-        gbc.gridx = 3;
-        gbc.gridy = 1;
-        mapPanel.add(bValCombo, gbc);
-
-        JPanel opPanel = new JPanel(new BorderLayout(10, 10));
-        // 修改开始填充按钮样式为默认
-        JButton runBtn = new JButton("开始填充");
-        // 不设置 setFont、setBackground、setForeground、setFocusPainted、setOpaque 等，仅保留默认样式
-        opPanel.add(runBtn, BorderLayout.CENTER);
-
-        JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        mainPanel.add(filePanel);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(headerPanel);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(mapPanel);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(opPanel);
-
-        // 事件
-        selA.addActionListener(e -> {
-            JFileChooser fc = new JFileChooser();
-            fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-            if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
-                aPath.setText(fc.getSelectedFile().getAbsolutePath());
-                logArea.append("已选择源表: " + aPath.getText() + "\n");
-                ProgressDialog progressDialog = createProgressDialog("加载源表表头");
-                SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                    java.util.List<String> headers = null;
-                    @Override
-                    protected Void doInBackground() {
-                        try {
-                            headers = new com.xzy.CrossSheetFiller().readHeadersOnly(new File(aPath.getText()));
-                        } catch (Exception ex) {
-                            headers = null;
-                        }
-                        return null;
-                    }
-                    @Override
-                    protected void done() {
-                        progressDialog.dialog.dispose();
-                        if (headers != null) {
-                            aHeadersArea.setText(String.join(", ", headers));
-                            aKeyCombo.removeAllItems();
-                            aValCombo.removeAllItems();
-                            for (String h : headers) {
-                                aKeyCombo.addItem(h);
-                                aValCombo.addItem(h);
-                            }
-                            if (aKeyCombo.getItemCount() > 0) aKeyCombo.setSelectedIndex(0);
-                            if (aValCombo.getItemCount() > 0) aValCombo.setSelectedIndex(0);
-                        } else {
-                            aHeadersArea.setText("读取源表表头失败");
-                            aKeyCombo.removeAllItems();
-                            aValCombo.removeAllItems();
-                        }
-                    }
-                };
-                worker.execute();
-                progressDialog.dialog.setVisible(true);
-            }
-        });
-        selB.addActionListener(e -> {
-            JFileChooser fc = new JFileChooser();
-            fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-            if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
-                bPath.setText(fc.getSelectedFile().getAbsolutePath());
-                logArea.append("已选择目标表: " + bPath.getText() + "\n");
-                ProgressDialog progressDialog = createProgressDialog("加载目标表表头");
-                SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                    java.util.List<String> headers = null;
-                    @Override
-                    protected Void doInBackground() {
-                        try {
-                            headers = new com.xzy.CrossSheetFiller().readHeadersOnly(new File(bPath.getText()));
-                        } catch (Exception ex) {
-                            headers = null;
-                        }
-                        return null;
-                    }
-                    @Override
-                    protected void done() {
-                        progressDialog.dialog.dispose();
-                        if (headers != null) {
-                            bHeadersArea.setText(String.join(", ", headers));
-                            bKeyCombo.removeAllItems();
-                            bValCombo.removeAllItems();
-                            for (String h : headers) {
-                                bKeyCombo.addItem(h);
-                                bValCombo.addItem(h);
-                            }
-                            if (bKeyCombo.getItemCount() > 0) bKeyCombo.setSelectedIndex(0);
-                            if (bValCombo.getItemCount() > 0) bValCombo.setSelectedIndex(0);
-                        } else {
-                            bHeadersArea.setText("读取目标表表头失败");
-                            bKeyCombo.removeAllItems();
-                            bValCombo.removeAllItems();
-                        }
-                    }
-                };
-                worker.execute();
-                progressDialog.dialog.setVisible(true);
-            }
-        });
-        runBtn.addActionListener(e -> {
-            String aPathVal = aPath.getText();
-            String bPathVal = bPath.getText();
-            JFileChooser fc = new JFileChooser();
-            fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-            fc.setDialogTitle("选择输出文件");
-            int result = fc.showSaveDialog(mainPanel);
-            if (result != JFileChooser.APPROVE_OPTION) {
-                logArea.append("未选择输出文件，操作取消\n");
-                return;
-            }
-            final String outPathVal;
-            String outPathRaw = fc.getSelectedFile().getAbsolutePath();
-            if (!outPathRaw.toLowerCase().endsWith(".xlsx")) outPathVal = outPathRaw + ".xlsx";
-            else outPathVal = outPathRaw;
-            logArea.append("已选择输出: " + outPathVal + "\n");
-            String aKey = (String) aKeyCombo.getSelectedItem();
-            String aVal = (String) aValCombo.getSelectedItem();
-            String bKey = (String) bKeyCombo.getSelectedItem();
-            String bVal = (String) bValCombo.getSelectedItem();
-            if (aPathVal == null || aPathVal.isEmpty() ||
-                bPathVal == null || bPathVal.isEmpty() ||
-                outPathVal == null || outPathVal.isEmpty() ||
-                aKey == null || aVal == null || bKey == null || bVal == null) {
-                logArea.append("请先选择所有文件和表头映射项！\n");
-                JOptionPane.showMessageDialog(mainPanel, "请先选择所有文件和表头映射项！", "提示", JOptionPane.WARNING_MESSAGE);
-                return;
-            }
-            ProgressDialog progressDialog = createProgressDialog("处理中");
-            final JLabel progressLabel = progressDialog.label;
-            final JProgressBar progressBar = progressDialog.progressBar;
-            SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
-                @Override
-                protected Void doInBackground() {
-                    try {
-                        new com.xzy.CrossSheetFiller().fill(
-                                aPathVal, bPathVal, outPathVal,
-                                aKey, aVal, bKey, bVal,
-                                (cur, total) -> publish((int) (cur * 100.0 / total))
-                        );
-                    } catch (Exception ex) {
-                        throw new RuntimeException(ex);
-                    }
-                    return null;
-                }
-                @Override
-                protected void process(java.util.List<Integer> chunks) {
-                    if (!chunks.isEmpty()) {
-                        int val = chunks.get(chunks.size() - 1);
-                        progressBar.setIndeterminate(false);
-                        progressBar.setValue(val);
-                        progressLabel.setText("正在处理数据... " + val + "%");
-                    }
-                }
-                @Override
-                protected void done() {
-                    progressDialog.dialog.dispose();
-                }
-            };
-            worker.execute();
-            progressDialog.dialog.setVisible(true);
-            try {
-                worker.get();
-                logArea.append("处理完成: " + outPathVal + "\n");
-                JOptionPane.showMessageDialog(mainPanel, "处理完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
-            } catch (Exception ex) {
-                logArea.append("失败: " + ex.getMessage() + "\n");
-                JOptionPane.showMessageDialog(mainPanel, "失败: " + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
-            }
-        });
-        return mainPanel;
-    }
-
-    // 重复列合并工具 tab
-    private JPanel createDuplicateColPanel(JTextArea logArea) {
-        JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        JPanel filePanel = new JPanel(new GridBagLayout());
-        filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 8, 8, 8);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.weightx = 1;
-        JTextField inputPath = new JTextField();
-        inputPath.setEditable(false);
-        JButton selectInput = new JButton("选择输入文件");
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
-        filePanel.add(new JLabel("输入文件路径:"), gbc);
-        gbc.gridx = 1; gbc.gridy = 0; gbc.gridwidth = 2;
-        filePanel.add(inputPath, gbc);
-        gbc.gridx = 3; gbc.gridy = 0; gbc.gridwidth = 1;
-        filePanel.add(selectInput, gbc);
-
-        mainPanel.add(filePanel);
-        JPanel headerPanel = new JPanel(new GridBagLayout());
-        headerPanel.setBorder(BorderFactory.createTitledBorder("表头选择区"));
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(new JLabel("重复列:"), gbc);
-        JComboBox<String> customerIdCombo = new JComboBox<>();
-        customerIdCombo.setPreferredSize(new Dimension(180, 28));
-        gbc.gridx = 1; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(customerIdCombo, gbc);
-        gbc.gridx = 2; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(new JLabel("要合并的列(可多选):"), gbc);
-        DefaultListModel<String> mergeColsModel = new DefaultListModel<>();
-        JList<String> mergeColsList = new JList<>(mergeColsModel);
-        mergeColsList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        JScrollPane mergeColsScroll = new JScrollPane(mergeColsList);
-        mergeColsScroll.setPreferredSize(new Dimension(220, 150));
-        gbc.gridx = 3; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(mergeColsScroll, gbc);
-        mainPanel.add(headerPanel);
-        JPanel opPanel = new JPanel(new BorderLayout(10, 10));
-        JButton runBtn = new JButton("开始合并");
-        opPanel.add(runBtn, BorderLayout.CENTER);
-        mainPanel.add(opPanel);
-        // 事件
-        selectInput.addActionListener(e -> {
-            JFileChooser fc = new JFileChooser();
-            fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-            if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
-                inputPath.setText(fc.getSelectedFile().getAbsolutePath());
-                logArea.append("已选择输入: " + inputPath.getText() + "\n");
-                ProgressDialog progressDialog = createProgressDialog("加载输入文件表头");
-                SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                    java.util.List<String> headers = null;
-                    @Override
-                    protected Void doInBackground() {
-                        try {
-                            headers = new com.xzy.DuplicateColumnMerger().readHeadersOnly(new File(inputPath.getText()));
-                        } catch (Exception ex) {
-                            headers = null;
-                        }
-                        return null;
-                    }
-                    @Override
-                    protected void done() {
-                        progressDialog.dialog.dispose();
-                        if (headers != null) {
-                            customerIdCombo.removeAllItems();
-                            mergeColsModel.clear();
-                            for (String h : headers) {
-                                customerIdCombo.addItem(h);
-                                mergeColsModel.addElement(h);
-                            }
-                            if (customerIdCombo.getItemCount() > 0) customerIdCombo.setSelectedIndex(0);
-                        } else {
-                            customerIdCombo.removeAllItems();
-                            mergeColsModel.clear();
-                        }
-                    }
-                };
-                worker.execute();
-                progressDialog.dialog.setVisible(true);
-            }
-        });
-        runBtn.addActionListener(e -> {
-            String inPath = inputPath.getText();
-            // 点击开始合并时弹出保存文件对话框
-            JFileChooser fc = new JFileChooser();
-            fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-            fc.setDialogTitle("选择输出文件");
-            int result = fc.showSaveDialog(mainPanel);
-            if (result != JFileChooser.APPROVE_OPTION) {
-                logArea.append("未选择输出文件，操作取消\n");
-                return;
-            }
-            final String outPath;
-            String outPathRaw = fc.getSelectedFile().getAbsolutePath();
-            if (!outPathRaw.toLowerCase().endsWith(".xlsx")) outPath = outPathRaw + ".xlsx";
-            else outPath = outPathRaw;
-            logArea.append("已选择输出: " + outPath + "\n");
-            if (inPath == null || inPath.isEmpty()) {
-                logArea.append("请先选择输入文件\n");
-                return;
-            }
-            if (customerIdCombo.getSelectedItem() == null || mergeColsList.getSelectedValuesList().isEmpty()) {
-                logArea.append("请选择CustomerId列和要合并的列\n");
-                return;
-            }
-            String customerIdCol = (String) customerIdCombo.getSelectedItem();
-            java.util.List<String> mergeCols = mergeColsList.getSelectedValuesList();
-            ProgressDialog progressDialog = createProgressDialog("处理中");
-            final JLabel progressLabel = progressDialog.label;
-            final JProgressBar progressBar = progressDialog.progressBar;
-            SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
-                @Override
-                protected Void doInBackground() {
-                    try {
-                        new com.xzy.DuplicateColumnMerger().mergeByCustomerIdWithProgress(inPath, outPath, customerIdCol, mergeCols, (cur, total) -> publish((int) (cur * 100.0 / total)));
-                    } catch (Exception ex) {
-                        throw new RuntimeException(ex);
-                    }
-                    return null;
-                }
-                @Override
-                protected void process(java.util.List<Integer> chunks) {
-                    if (!chunks.isEmpty()) {
-                        int val = chunks.get(chunks.size() - 1);
-                        progressBar.setIndeterminate(false);
-                        progressBar.setValue(val);
-                        progressLabel.setText("正在合并数据... " + val + "%");
-                    }
-                }
-                @Override
-                protected void done() {
-                    progressDialog.dialog.dispose();
-                }
-            };
-            worker.execute();
-            progressDialog.dialog.setVisible(true);
-            try {
-                worker.get();
-                logArea.append("处理完成: " + outPath + "\n");
-                JOptionPane.showMessageDialog(mainPanel, "处理完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
-            } catch (Exception ex) {
-                logArea.append("失败: " + ex.getMessage() + "\n");
-                JOptionPane.showMessageDialog(mainPanel, "失败: " + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
-            }
-        });
-        return mainPanel;
-    }
+    // --- createCrossSheetPanel 和 createDuplicateColPanel 已移至 panel/ 包 ---
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
-                e.printStackTrace();
+                logger.error("设置外观失败", e);
             }
             new ExcelTools();
         });

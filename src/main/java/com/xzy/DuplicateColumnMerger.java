@@ -1,8 +1,10 @@
 package com.xzy;
 
+import com.xzy.util.ExcelUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.IOUtils;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 
 import javax.swing.*;
@@ -25,15 +27,11 @@ import java.util.Set;
  */
 @Deprecated
 public class DuplicateColumnMerger {
+    private static final Logger logger = LogManager.getLogger(DuplicateColumnMerger.class);
     private static final String SEPARATOR = "|";
 
     /**
      * 合并Excel中指定列（重复列）相同的多行数据
-     *
-     * @param inputFilePath  输入文件路径
-     * @param outputFilePath 输出文件路径
-     * @param keyColumn      作为重复判断的列名
-     * @throws IOException 读写异常
      */
     public void mergeByKeyColumn(String inputFilePath, String outputFilePath, String keyColumn) throws IOException {
         File inputFile = new File(inputFilePath);
@@ -68,13 +66,12 @@ public class DuplicateColumnMerger {
                 if (keyColumn.equalsIgnoreCase(h)) keyCol = i;
             }
             if (keyCol == -1) throw new IOException("未找到重复列 '" + keyColumn + "'，请检查表头。");
-            // Map<重复值, List<每列内容List>>
             Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
                 Cell keyCell = row.getCell(keyCol);
-                String key = (keyCell != null) ? getCellValueAsString(keyCell) : null;
+                String key = (keyCell != null) ? ExcelUtils.getCellValueAsString(keyCell) : null;
                 if (key == null || key.isEmpty()) continue;
                 java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(key, k -> {
                     java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
@@ -83,11 +80,10 @@ public class DuplicateColumnMerger {
                 });
                 for (int j = 0; j < colCount; j++) {
                     Cell cell = row.getCell(j);
-                    String v = (cell != null) ? getCellValueAsString(cell) : null;
+                    String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
                     if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
                 }
             }
-            // 写入新表（流式SXSSFWorkbook）
             Sheet outSheet = outputWorkbook.createSheet("Sheet1");
             Row outHeader = outSheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
@@ -104,80 +100,12 @@ public class DuplicateColumnMerger {
                 }
             }
             outputWorkbook.write(fos);
-            outputWorkbook.dispose(); // 释放临时文件
+            outputWorkbook.dispose();
         } catch (Exception e) {
             throw new IOException("处理Excel文件时发生错误: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * 获取单元格字符串值
-     */
-    private String getCellValueAsString(Cell cell) {
-        if (cell == null) return "";
-        try {
-            switch (cell.getCellType()) {
-                case STRING:
-                    return cell.getStringCellValue();
-                case NUMERIC:
-                    if (DateUtil.isCellDateFormatted(cell)) {
-                        return cell.getDateCellValue().toString();
-                    } else {
-                        DataFormatter formatter = new DataFormatter();
-                        return formatter.formatCellValue(cell);
-                    }
-                case BOOLEAN:
-                    return String.valueOf(cell.getBooleanCellValue());
-                case FORMULA:
-                    try {
-                        return String.valueOf(cell.getNumericCellValue());
-                    } catch (Exception e) {
-                        try {
-                            return String.valueOf(cell.getStringCellValue());
-                        } catch (Exception e2) {
-                            return cell.getCellFormula();
-                        }
-                    }
-                default:
-                    return "";
-            }
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    /**
-     * 读取Excel文件的表头（首行）
-     */
-    public java.util.List<String> readHeadersOnly(File file) throws IOException {
-        if (file.getName().toLowerCase().endsWith(".xlsx")) {
-            return readXLSXHeaders(file);
-        } else {
-            return readXLSHeaders(file);
-        }
-    }
-    private java.util.List<String> readXLSXHeaders(File file) throws IOException {
-        java.util.List<String> headers = new java.util.ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(file); Workbook workbook = WorkbookFactory.create(fis)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
-            if (headerRow != null) {
-                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                    Cell cell = headerRow.getCell(i);
-                    if (cell != null) {
-                        headers.add(cell.getStringCellValue().trim());
-                    }
-                }
-            }
-        }
-        return headers;
-    }
-    private java.util.List<String> readXLSHeaders(File file) throws IOException {
-        // xls和xlsx都可以用WorkbookFactory.create读取
-        return readXLSXHeaders(file);
-    }
-    // 删除 createPanel 及相关 UI 代码，只保留 mergeByKeyColumn、mergeByCustomerIdWithProgress、main 及数据处理方法
-    // 统一进度条弹窗创建方法
     private static JDialog createProgressDialog(JFrame parent, String title, String message, boolean indeterminate, JProgressBar[] progressBarHolder, JLabel[] percentLabelHolder) {
         JDialog dialog = new JDialog(parent, title, true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
@@ -208,15 +136,13 @@ public class DuplicateColumnMerger {
         return dialog;
     }
 
-    /**
-     * 命令行/交互入口
-     */
     public static void main(String[] args) {
-        IOUtils.setByteArrayMaxOverride(200_000_000); // 允许最大200MB的单元格内容
+        IOUtils.setByteArrayMaxOverride(200_000_000);
         SwingUtilities.invokeLater(() -> {
             try {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
+                logger.error("设置外观失败", e);
             }
             JFrame frame = new JFrame("重复列合并器");
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -226,7 +152,6 @@ public class DuplicateColumnMerger {
             mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
             mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-            // 文件选择区
             JPanel filePanel = new JPanel(new GridBagLayout());
             filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
             GridBagConstraints gbc = new GridBagConstraints();
@@ -253,7 +178,6 @@ public class DuplicateColumnMerger {
             filePanel.add(selectOutput, gbc);
             mainPanel.add(filePanel);
 
-            // 表头选择区
             JPanel headerPanel = new JPanel(new GridBagLayout());
             headerPanel.setBorder(BorderFactory.createTitledBorder("表头选择区"));
             gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
@@ -268,13 +192,11 @@ public class DuplicateColumnMerger {
             JList<String> mergeColsList = new JList<>(mergeColsModel);
             mergeColsList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
             JScrollPane mergeColsScroll = new JScrollPane(mergeColsList);
-            // 修改高度为150，便于显示更多内容
             mergeColsScroll.setPreferredSize(new Dimension(220, 150));
             gbc.gridx = 3; gbc.gridy = 0; gbc.gridwidth = 1;
             headerPanel.add(mergeColsScroll, gbc);
             mainPanel.add(headerPanel);
 
-            // 操作区
             JPanel opPanel = new JPanel(new BorderLayout(10, 10));
             JButton runBtn = new JButton("开始合并");
             JLabel status = new JLabel("就绪");
@@ -286,14 +208,12 @@ public class DuplicateColumnMerger {
             frame.add(mainPanel);
             frame.setVisible(true);
 
-            // 事件
             selectInput.addActionListener(e -> {
                 JFileChooser fc = new JFileChooser();
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
                 if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
                     inputPath.setText(fc.getSelectedFile().getAbsolutePath());
                     status.setText("已选择输入: " + inputPath.getText());
-                    // 恢复：选择输入文件后自动读取表头并填充下拉框和多选框
                     JProgressBar[] progressBarHolder = new JProgressBar[1];
                     JLabel[] percentLabelHolder = new JLabel[1];
                     JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载输入文件表头，请稍候...", true, progressBarHolder, percentLabelHolder);
@@ -302,7 +222,7 @@ public class DuplicateColumnMerger {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                headers = new DuplicateColumnMerger().readHeadersOnly(new File(inputPath.getText()));
+                                headers = ExcelUtils.readHeadersOnly(new File(inputPath.getText()));
                             } catch (Exception ex) {
                                 headers = null;
                             }
@@ -352,7 +272,6 @@ public class DuplicateColumnMerger {
                 }
                 String customerIdCol = (String) customerIdCombo.getSelectedItem();
                 java.util.List<String> mergeCols = mergeColsList.getSelectedValuesList();
-                // 统一进度条弹窗
                 JProgressBar[] progressBarHolder = new JProgressBar[1];
                 JLabel[] percentLabelHolder = new JLabel[1];
                 JDialog progressDialog = createProgressDialog(frame, "处理中", "正在合并数据...", false, progressBarHolder, percentLabelHolder);
@@ -395,7 +314,6 @@ public class DuplicateColumnMerger {
         });
     }
 
-    // 支持进度回调的合并方法
     public void mergeByCustomerIdWithProgress(String inputFilePath, String outputFilePath, String customerIdCol, java.util.List<String> mergeCols, ProgressListener progressListener) throws IOException {
         File inputFile = new File(inputFilePath);
         File outputFile = new File(outputFilePath);
@@ -413,7 +331,7 @@ public class DuplicateColumnMerger {
         }
         try (FileInputStream fis = new FileInputStream(inputFile);
              Workbook workbook = WorkbookFactory.create(fis);
-             Workbook outputWorkbook = new XSSFWorkbook();
+             Workbook outputWorkbook = new SXSSFWorkbook(100);
              FileOutputStream fos = new FileOutputStream(outputFile)) {
             Sheet sheet = workbook.getSheetAt(0);
             if (sheet == null) throw new IOException("源文件没有数据");
@@ -431,14 +349,13 @@ public class DuplicateColumnMerger {
                 if (mergeCols.contains(h)) mergeColIdxs.add(i);
             }
             if (customerIdColIdx == -1) throw new IOException("未找到CustomerId列");
-            // Map<CustomerId, List<每列内容List>>
             Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
             int totalRows = sheet.getLastRowNum();
             for (int i = 1; i <= totalRows; i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
                 Cell cidCell = row.getCell(customerIdColIdx);
-                String cid = (cidCell != null) ? getCellValueAsString(cidCell) : null;
+                String cid = (cidCell != null) ? ExcelUtils.getCellValueAsString(cidCell) : null;
                 if (cid == null || cid.isEmpty()) continue;
                 java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(cid, k -> {
                     java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
@@ -447,14 +364,13 @@ public class DuplicateColumnMerger {
                 });
                 for (int j = 0; j < colCount; j++) {
                     Cell cell = row.getCell(j);
-                    String v = (cell != null) ? getCellValueAsString(cell) : null;
+                    String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
                     if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
                 }
                 if (progressListener != null && (i % 100 == 0 || i == totalRows)) {
                     progressListener.onProgress(i, totalRows);
                 }
             }
-            // 写入新表
             Sheet outSheet = outputWorkbook.createSheet("Sheet1");
             Row outHeader = outSheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
@@ -476,8 +392,10 @@ public class DuplicateColumnMerger {
                 }
             }
             outputWorkbook.write(fos);
+            ((SXSSFWorkbook) outputWorkbook).dispose();
         }
     }
+
     public interface ProgressListener {
         void onProgress(int current, int total);
     }

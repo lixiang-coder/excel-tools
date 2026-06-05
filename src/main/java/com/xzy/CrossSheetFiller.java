@@ -1,7 +1,10 @@
 package com.xzy;
 
+import com.xzy.util.ExcelUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.util.IOUtils;
 
 import javax.swing.*;
@@ -23,6 +26,7 @@ import java.awt.Color;
  */
 @Deprecated
 public class CrossSheetFiller {
+    private static final Logger logger = LogManager.getLogger(CrossSheetFiller.class);
     /**
      * 执行跨表主键数据填充（带进度监听）
      */
@@ -45,7 +49,7 @@ public class CrossSheetFiller {
              FileInputStream bFis = new FileInputStream(bFile);
              Workbook aWb = WorkbookFactory.create(aFis);
              Workbook bWb = WorkbookFactory.create(bFis);
-             Workbook outWb = new XSSFWorkbook();
+             Workbook outWb = new SXSSFWorkbook(100);
              FileOutputStream fos = new FileOutputStream(outFile)) {
             Sheet aSheet = aWb.getSheetAt(0);
             Sheet bSheet = bWb.getSheetAt(0);
@@ -56,18 +60,18 @@ public class CrossSheetFiller {
             // ---增强容错：建立表头容错Map---
             Map<String, Integer> aHeaderMap = new HashMap<>();
             for (int i = 0; i < aHeaderRow.getLastCellNum(); i++) {
-                String h = getCellValueAsString(aHeaderRow.getCell(i));
-                if (h != null) aHeaderMap.put(cleanString(h).toLowerCase(), i);
+                String h = ExcelUtils.getCellValueAsString(aHeaderRow.getCell(i));
+                if (h != null) aHeaderMap.put(ExcelUtils.cleanString(h).toLowerCase(), i);
             }
             Map<String, Integer> bHeaderMap = new HashMap<>();
             for (int i = 0; i < bHeaderRow.getLastCellNum(); i++) {
-                String h = getCellValueAsString(bHeaderRow.getCell(i));
-                if (h != null) bHeaderMap.put(cleanString(h).toLowerCase(), i);
+                String h = ExcelUtils.getCellValueAsString(bHeaderRow.getCell(i));
+                if (h != null) bHeaderMap.put(ExcelUtils.cleanString(h).toLowerCase(), i);
             }
-            int aKeyIdx = aHeaderMap.getOrDefault(cleanString(aKeyHeader).toLowerCase(), -1);
-            int aValIdx = aHeaderMap.getOrDefault(cleanString(aValueHeader).toLowerCase(), -1);
-            int bKeyIdx = bHeaderMap.getOrDefault(cleanString(bKeyHeader).toLowerCase(), -1);
-            int bValIdx = bHeaderMap.getOrDefault(cleanString(bValueHeader).toLowerCase(), -1);
+            int aKeyIdx = aHeaderMap.getOrDefault(ExcelUtils.cleanString(aKeyHeader).toLowerCase(), -1);
+            int aValIdx = aHeaderMap.getOrDefault(ExcelUtils.cleanString(aValueHeader).toLowerCase(), -1);
+            int bKeyIdx = bHeaderMap.getOrDefault(ExcelUtils.cleanString(bKeyHeader).toLowerCase(), -1);
+            int bValIdx = bHeaderMap.getOrDefault(ExcelUtils.cleanString(bValueHeader).toLowerCase(), -1);
             // ---友好报错---
             if (aKeyIdx == -1)
                 throw new IOException("源表未找到主键表头: " + aKeyHeader + "（已自动忽略空格和大小写）");
@@ -87,7 +91,7 @@ public class CrossSheetFiller {
                     for (int j = 0; j < src.getLastCellNum(); j++) {
                         Cell srcCell = src.getCell(j);
                         Cell dstCell = dst.createCell(j);
-                        if (srcCell != null) copyCellValue(srcCell, dstCell);
+                        if (srcCell != null) ExcelUtils.copyCellValue(srcCell, dstCell);
                     }
                 }
             }
@@ -96,7 +100,7 @@ public class CrossSheetFiller {
             for (int j = 1; j <= outSheet.getLastRowNum(); j++) {
                 Row bRow = outSheet.getRow(j);
                 if (bRow == null) bRow = outSheet.createRow(j);
-                String bKey = cleanString(getCellValueAsString(bRow.getCell(bKeyIdx)));
+                String bKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(bRow.getCell(bKeyIdx)));
                 if (bKey == null) continue;
                 bKeyToRows.computeIfAbsent(bKey, k -> new java.util.ArrayList<>()).add(bRow);
             }
@@ -107,8 +111,8 @@ public class CrossSheetFiller {
                 cur++;
                 Row aRow = aSheet.getRow(i);
                 if (aRow == null) continue;
-                String aKey = cleanString(getCellValueAsString(aRow.getCell(aKeyIdx)));
-                String aVal = getCellValueAsString(aRow.getCell(aValIdx));
+                String aKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(aRow.getCell(aKeyIdx)));
+                String aVal = ExcelUtils.getCellValueAsString(aRow.getCell(aValIdx));
                 if (aKey == null || aKey.isEmpty()) continue;
                 java.util.List<Row> bRows = bKeyToRows.get(aKey);
                 if (bRows != null) {
@@ -124,114 +128,13 @@ public class CrossSheetFiller {
                 }
             }
             outWb.write(fos);
-            // 不再需要dispose()
+            ((SXSSFWorkbook) outWb).dispose();
         }
     }
 
     // 进度监听接口
     public interface ProgressListener {
         void onProgress(int current, int total);
-    }
-
-    /**
-     * 获取单元格字符串值
-     */
-    private String getCellValueAsString(Cell cell) {
-        if (cell == null) return "";
-        try {
-            switch (cell.getCellType()) {
-                case STRING:
-                    return cell.getStringCellValue();
-                case NUMERIC:
-                    if (DateUtil.isCellDateFormatted(cell)) {
-                        return cell.getDateCellValue().toString();
-                    } else {
-                        DataFormatter formatter = new DataFormatter();
-                        return formatter.formatCellValue(cell);
-                    }
-                case BOOLEAN:
-                    return String.valueOf(cell.getBooleanCellValue());
-                case FORMULA:
-                    try {
-                        return String.valueOf(cell.getNumericCellValue());
-                    } catch (Exception e) {
-                        try {
-                            return String.valueOf(cell.getStringCellValue());
-                        } catch (Exception e2) {
-                            return cell.getCellFormula();
-                        }
-                    }
-                default:
-                    return "";
-            }
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    /**
-     * 复制单元格内容
-     */
-    private void copyCellValue(Cell src, Cell dst) {
-        switch (src.getCellType()) {
-            case STRING:
-                dst.setCellValue(src.getStringCellValue());
-                break;
-            case NUMERIC:
-                if (DateUtil.isCellDateFormatted(src)) dst.setCellValue(src.getDateCellValue());
-                else dst.setCellValue(src.getNumericCellValue());
-                break;
-            case BOOLEAN:
-                dst.setCellValue(src.getBooleanCellValue());
-                break;
-            case FORMULA:
-                dst.setCellFormula(src.getCellFormula());
-                break;
-            case BLANK:
-                dst.setBlank();
-                break;
-            case ERROR:
-                dst.setCellErrorValue(src.getErrorCellValue());
-                break;
-        }
-    }
-
-    // 工具方法：去除所有不可见字符
-    private String cleanString(String s) {
-        if (s == null) return null;
-        // 去除所有空白字符（空格、制表符、换行等）
-        return s.replaceAll("\\s+", "").replace("\uFEFF", "");
-    }
-
-    /**
-     * 读取Excel文件的表头（首行）
-     */
-    public java.util.List<String> readHeadersOnly(File file) throws IOException {
-        if (file.getName().toLowerCase().endsWith(".xlsx")) {
-            return readXLSXHeaders(file);
-        } else {
-            return readXLSHeaders(file);
-        }
-    }
-    private java.util.List<String> readXLSXHeaders(File file) throws IOException {
-        java.util.List<String> headers = new java.util.ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(file); Workbook workbook = WorkbookFactory.create(fis)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
-            if (headerRow != null) {
-                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                    Cell cell = headerRow.getCell(i);
-                    if (cell != null) {
-                        headers.add(cell.getStringCellValue().trim());
-                    }
-                }
-            }
-        }
-        return headers;
-    }
-    private java.util.List<String> readXLSHeaders(File file) throws IOException {
-        // xls和xlsx都可以用WorkbookFactory.create读取
-        return readXLSXHeaders(file);
     }
 
     /**
@@ -243,6 +146,7 @@ public class CrossSheetFiller {
             try {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
+                logger.error("设置外观失败", e);
             }
             // 设置全局字体
             java.awt.Font uiFont = new java.awt.Font("Microsoft YaHei", java.awt.Font.PLAIN, 16);
@@ -445,7 +349,6 @@ public class CrossSheetFiller {
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
                 if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
                     aPath.setText(fc.getSelectedFile().getAbsolutePath());
-                    // 统一进度条弹窗
                     JProgressBar[] progressBarHolder = new JProgressBar[1];
                     JLabel[] percentLabelHolder = new JLabel[1];
                     JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载源表表头，请稍候...", true, progressBarHolder, percentLabelHolder);
@@ -453,7 +356,7 @@ public class CrossSheetFiller {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                java.util.List<String> headers = new CrossSheetFiller().readHeadersOnly(new File(aPath.getText()));
+                                java.util.List<String> headers = ExcelUtils.readHeadersOnly(new File(aPath.getText()));
                                 SwingUtilities.invokeLater(() -> {
                                     aHeadersArea.setText(String.join(", ", headers));
                                     aKeyCombo.removeAllItems();
@@ -488,14 +391,12 @@ public class CrossSheetFiller {
                     }
                 }
             });
-            // 选择目标表按钮点击事件
             selB.addActionListener(e -> {
                 if (!isSelBEnabled[0]) return;
                 JFileChooser fc = new JFileChooser();
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
                 if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
                     bPath.setText(fc.getSelectedFile().getAbsolutePath());
-                    // 统一进度条弹窗
                     JProgressBar[] progressBarHolder = new JProgressBar[1];
                     JLabel[] percentLabelHolder = new JLabel[1];
                     JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载目标表表头，请稍候...", true, progressBarHolder, percentLabelHolder);
@@ -503,7 +404,7 @@ public class CrossSheetFiller {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                java.util.List<String> headers = new CrossSheetFiller().readHeadersOnly(new File(bPath.getText()));
+                                java.util.List<String> headers = ExcelUtils.readHeadersOnly(new File(bPath.getText()));
                                 SwingUtilities.invokeLater(() -> {
                                     bHeadersArea.setText(String.join(", ", headers));
                                     bKeyCombo.removeAllItems();
@@ -549,7 +450,6 @@ public class CrossSheetFiller {
                 }
             });
             runBtn.addActionListener(e -> {
-                // 统一进度条弹窗
                 JProgressBar[] progressBarHolder = new JProgressBar[1];
                 JLabel[] percentLabelHolder = new JLabel[1];
                 JDialog progressDialog = createProgressDialog(frame, "处理中", "正在处理数据...", false, progressBarHolder, percentLabelHolder);
@@ -600,7 +500,6 @@ public class CrossSheetFiller {
         });
     }
 
-    // 统一进度条弹窗创建方法
     private static JDialog createProgressDialog(JFrame parent, String title, String message, boolean indeterminate, JProgressBar[] progressBarHolder, JLabel[] percentLabelHolder) {
         JDialog dialog = new JDialog(parent, title, true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
