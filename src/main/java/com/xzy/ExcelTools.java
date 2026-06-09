@@ -5,6 +5,7 @@ import com.xzy.model.HeaderMapping;
 import com.xzy.model.ProgressDialog;
 import com.xzy.panel.CrossSheetPanel;
 import com.xzy.panel.DuplicateColPanel;
+import com.xzy.panel.TableMergePanel;
 import com.xzy.util.ExcelUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -134,6 +135,9 @@ public class ExcelTools {
         // 集成重复列工具
         JPanel duplicateColPanel = new DuplicateColPanel(ctx).createPanel();
         tabbedPane.addTab("重复列工具", duplicateColPanel);
+        // 集成表格合并工具
+        JPanel tableMergePanel = new TableMergePanel(ctx).createPanel();
+        tabbedPane.addTab("表格合并", tableMergePanel);
     }
 
     private JPanel createProcessorPanel() {
