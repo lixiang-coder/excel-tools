@@ -118,6 +118,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -AppNa
 - `dist/ExcelTools-1.0.0-setup.exe`：自解压客户安装包（不依赖WiX）
 - `dist/ExcelTools/ExcelTools.exe`：免安装应用目录（`-Type app-image`）
 
+#### 自解压安装包的安装与卸载
+
+`ExcelTools-1.0.0-setup.exe`使用当前Windows用户权限安装，不需要管理员权限。默认安装位置为：
+
+```text
+%LOCALAPPDATA%\Programs\ExcelTools
+```
+
+主程序及快捷方式位置如下：
+
+```text
+%LOCALAPPDATA%\Programs\ExcelTools\ExcelTools.exe
+%USERPROFILE%\Desktop\ExcelTools.lnk
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\ExcelTools\ExcelTools.lnk
+```
+
+该自解压安装包不提供安装目录选择，也不会在安装完成后自动启动程序。重复安装时会先删除原安装目录，再写入新版本。
+
+当前`self-extracting-exe`安装方式不会注册Windows“应用和功能”卸载项。卸载前先关闭ExcelTools，然后执行：
+
+```powershell
+Remove-Item "$env:LOCALAPPDATA\Programs\ExcelTools" -Recurse -Force
+Remove-Item "$env:USERPROFILE\Desktop\ExcelTools.lnk" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ExcelTools" -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+卸载只删除程序目录和快捷方式，不会删除用户另行保存的Excel文件。
+
 Launch4j仍可通过`launch4j-config.xml`将JAR打包为`ExcelProcessor.exe`，但该方式默认依赖客户电脑已有Java环境；客户零Java环境分发请优先使用`build-installer.ps1`。
 
 ## 使用说明
