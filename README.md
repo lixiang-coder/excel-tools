@@ -114,13 +114,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -AppNa
 
 输出目录为`dist/`：
 
-- `dist/ExcelTools-1.0.0.exe`：客户安装包
-- `dist/ExcelTools-1.0.0-setup.exe`：自解压客户安装包（不依赖WiX）
+- `dist/ExcelTools-1.0.1.exe`：客户安装包
+- `dist/ExcelTools-1.0.1-setup.exe`：自解压客户安装包（不依赖WiX）
 - `dist/ExcelTools/ExcelTools.exe`：免安装应用目录（`-Type app-image`）
+
+`AppVersion`会写入内置`ExcelTools.exe`的文件版本和产品版本，并用于安装包文件名。自解压安装包的外层由Windows IExpress生成，因此在文件属性中会显示系统`WEXTRACT.EXE`版本，而不是应用版本。
 
 #### 自解压安装包的安装与卸载
 
-`ExcelTools-1.0.0-setup.exe`使用当前Windows用户权限安装，不需要管理员权限。默认安装位置为：
+`ExcelTools-1.0.1-setup.exe`使用当前Windows用户权限安装，不需要管理员权限。默认安装位置为：
 
 ```text
 %LOCALAPPDATA%\Programs\ExcelTools
@@ -244,6 +246,11 @@ Launch4j仍可通过`launch4j-config.xml`将JAR打包为`ExcelProcessor.exe`，�
    - 输出文件中只保存计算结果，不保存公式
 
 ## 更新日志
+
+### v1.0.1
+- 优化Excel数值型日期的格式化逻辑，避免输出Java默认英文日期
+- 日期时间统一输出为常用数字格式，并按实际精度保留分钟或秒
+- 补充自解压安装包的安装目录和卸载说明
 
 ### v1.0.0
 - 初始版本发布

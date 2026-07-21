@@ -4,7 +4,7 @@ param(
     [string] $Type = 'exe',
 
     [string] $AppName = 'ExcelTools',
-    [string] $AppVersion = '1.0.0',
+    [string] $AppVersion = '1.0.1',
     [string] $Vendor = 'xzy',
     [string] $Description = 'Excel file processing desktop tools',
     [string] $MainClass = 'com.xzy.ExcelTools',
