@@ -11,6 +11,8 @@ import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
 
 import java.io.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,6 +21,9 @@ import java.util.List;
  */
 public class ExcelUtils {
     private static final Logger logger = LogManager.getLogger(ExcelUtils.class);
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd");
+    private static final DateTimeFormatter DATE_TIME_MINUTE_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm");
+    private static final DateTimeFormatter DATE_TIME_SECOND_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");
 
     /**
      * 将单元格内容转为字符串
@@ -33,7 +38,7 @@ public class ExcelUtils {
                 return cell.getStringCellValue().trim();
             case NUMERIC:
                 if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getDateCellValue().toString();
+                    return formatExcelDate(cell.getLocalDateTimeCellValue());
                 }
                 double value = cell.getNumericCellValue();
                 if (value == Math.floor(value)) {
@@ -49,7 +54,7 @@ public class ExcelUtils {
                             return cell.getStringCellValue().trim();
                         case NUMERIC:
                             if (DateUtil.isCellDateFormatted(cell)) {
-                                return cell.getDateCellValue().toString();
+                                return formatExcelDate(cell.getLocalDateTimeCellValue());
                             }
                             double formulaValue = cell.getNumericCellValue();
                             if (formulaValue == Math.floor(formulaValue)) {
@@ -68,6 +73,28 @@ public class ExcelUtils {
             default:
                 return "";
         }
+    }
+
+    /**
+     * 将Excel日期序列值转换为稳定、无时区信息的字符串。
+     * 纯日期不补零点时间；存在时间时按实际精度保留到分钟或秒。
+     */
+    public static String formatExcelDate(double excelDate) {
+        if (!DateUtil.isValidExcelDate(excelDate)) {
+            return String.valueOf(excelDate);
+        }
+        // roundSeconds=true，避免Excel浮点误差将整分钟解析为上一秒的末尾。
+        return formatExcelDate(DateUtil.getLocalDateTime(excelDate, false, true));
+    }
+
+    private static String formatExcelDate(LocalDateTime dateTime) {
+        if (dateTime.getHour() == 0 && dateTime.getMinute() == 0 && dateTime.getSecond() == 0) {
+            return DATE_FORMATTER.format(dateTime);
+        }
+        if (dateTime.getSecond() == 0) {
+            return DATE_TIME_MINUTE_FORMATTER.format(dateTime);
+        }
+        return DATE_TIME_SECOND_FORMATTER.format(dateTime);
     }
 
     /**

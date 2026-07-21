@@ -47,7 +47,19 @@
 
 ## 系统要求
 
+### 客户电脑（使用安装包）
+
+- Windows 10/11（64位）
+- 不需要预装Java环境
+- 内存：建议4GB以上
+- 磁盘空间：安装包会内置精简Java运行时，建议预留300MB以上
+
+### 开发/打包电脑
+
 - Java 8或更高版本
+- 生成免Java安装包需要JDK 17或更高版本（使用`jpackage`）
+- 生成Windows `.exe`/`.msi`安装器需要WiX Toolset 3.x，或运行打包脚本时使用`-DownloadWix`
+- Maven 3.x
 - 操作系统：Windows/Linux/MacOS
 - 内存：建议4GB以上
 - 磁盘空间：根据处理文件大小而定
@@ -79,7 +91,34 @@ mvn package                # 打包（生成 target/excel-processor-1.0-SNAPSHOT
 java -jar target/excel-processor-1.0-SNAPSHOT.jar   # 运行
 ```
 
-Launch4j可通过`launch4j-config.xml`将JAR打包为`ExcelProcessor.exe`。
+### 生成客户安装包（不要求客户安装Java）
+
+推荐使用项目根目录的`build-installer.ps1`：
+
+```powershell
+# 生成 Windows .exe 安装器（默认，标准安装器，需要 WiX）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -DownloadWix
+
+# 生成单文件自解压安装包（不需要 WiX，使用 Windows 内置 IExpress）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -Type self-extracting-exe
+
+# 如果已安装 WiX Toolset，也可以指定 WiX bin 目录
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -WixBin "C:\Program Files (x86)\WiX Toolset v3.14\bin"
+
+# 只生成免安装目录，用于快速验证或内部分发
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -Type app-image
+
+# 指定中文安装包应用名
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -AppName "Excel工具集" -DownloadWix
+```
+
+输出目录为`dist/`：
+
+- `dist/ExcelTools-1.0.0.exe`：客户安装包
+- `dist/ExcelTools-1.0.0-setup.exe`：自解压客户安装包（不依赖WiX）
+- `dist/ExcelTools/ExcelTools.exe`：免安装应用目录（`-Type app-image`）
+
+Launch4j仍可通过`launch4j-config.xml`将JAR打包为`ExcelProcessor.exe`，但该方式默认依赖客户电脑已有Java环境；客户零Java环境分发请优先使用`build-installer.ps1`。
 
 ## 使用说明
 

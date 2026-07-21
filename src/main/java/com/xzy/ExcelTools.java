@@ -744,7 +744,8 @@ public class ExcelTools {
                         if (style != null && DateUtil.isADateFormat(style.getDataFormat(), style.getDataFormatString())) {
                             try {
                                 double excelDate = Double.parseDouble(value);
-                                value = DateUtil.getJavaDate(excelDate).toString();
+                                // 统一使用无时区的中文常用格式，避免Date.toString()产生英文日期。
+                                value = ExcelUtils.formatExcelDate(excelDate);
                             } catch (NumberFormatException ignored) {
                             }
                         }
