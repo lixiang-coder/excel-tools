@@ -83,30 +83,9 @@ public class CrossSheetFiller {
                 throw new IOException("目标表未找到主键表头: " + bKeyHeader + "（已自动忽略空格和大小写）");
             if (bValIdx == -1)
                 throw new IOException("目标表未找到目标表头: " + bValueHeader + "（已自动忽略空格和大小写）");
-            // 复制目标表到输出表，始终创建每一行
-            Sheet outSheet = outWb.createSheet("Sheet1");
-            for (int i = 0; i <= bSheet.getLastRowNum(); i++) {
-                Row src = bSheet.getRow(i);
-                Row dst = outSheet.getRow(i);
-                if (dst == null) dst = outSheet.createRow(i);
-                if (src != null) {
-                    for (int j = 0; j < src.getLastCellNum(); j++) {
-                        Cell srcCell = src.getCell(j);
-                        Cell dstCell = dst.createCell(j);
-                        if (srcCell != null) ExcelUtils.copyCellValue(srcCell, dstCell);
-                    }
-                }
-            }
-            // 优化：建立目标表主键到所有行的映射
-            Map<String, java.util.List<Row>> bKeyToRows = new HashMap<>();
-            for (int j = 1; j <= outSheet.getLastRowNum(); j++) {
-                Row bRow = outSheet.getRow(j);
-                if (bRow == null) bRow = outSheet.createRow(j);
-                String bKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(bRow.getCell(bKeyIdx)));
-                if (bKey == null) continue;
-                bKeyToRows.computeIfAbsent(bKey, k -> new java.util.ArrayList<>()).add(bRow);
-            }
-            // 遍历源表，直接查找目标表所有匹配行
+            // 先聚合源表数据，避免目标表写入 SXSSF 后再回读已刷盘的行。
+            // StringBuilder 保留源表顺序和重复值，符合“保留原值并累加、不去重”的规则。
+            Map<String, StringBuilder> aKeyToValues = new HashMap<>();
             int total = aSheet.getLastRowNum();
             int cur = 0;
             for (int i = 1; i <= total; i++) {
@@ -115,24 +94,42 @@ public class CrossSheetFiller {
                 if (aRow == null) continue;
                 String aKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(aRow.getCell(aKeyIdx)));
                 String aVal = ExcelUtils.getCellValueAsString(aRow.getCell(aValIdx));
-                if (aKey == null || aKey.isEmpty()) continue;
-                java.util.List<Row> bRows = bKeyToRows.get(aKey);
-                if (bRows != null && aVal != null && !aVal.isEmpty()) {
-                    for (Row bRow : bRows) {
-                        Cell cell = bRow.getCell(bValIdx);
-                        if (cell == null) cell = bRow.createCell(bValIdx);
-                        String currentVal = ExcelUtils.getCellValueAsString(cell);
-                        // 保留每个目标行自己的原值，并按源表行顺序逐次追加；不去重以完整保留重复源数据。
-                        String accumulatedVal = currentVal == null || currentVal.isEmpty()
-                                ? aVal
-                                : currentVal + VALUE_SEPARATOR + aVal;
-                        cell.setCellValue(accumulatedVal);
-                        System.out.println("填充: 源表主键:" + aKey + " -> 目标表行:" + (bRow.getRowNum() + 1) + "，累加值:" + accumulatedVal);
-                    }
+                if (aKey != null && !aKey.isEmpty() && aVal != null && !aVal.isEmpty()) {
+                    StringBuilder values = aKeyToValues.computeIfAbsent(aKey, k -> new StringBuilder());
+                    if (values.length() > 0) values.append(VALUE_SEPARATOR);
+                    values.append(aVal);
                 }
                 if (progressListener != null && (cur % 100 == 0 || cur == total)) {
                     progressListener.onProgress(cur, total);
                 }
+            }
+
+            // 目标表只按原始顺序读取一次并立即写出当前行，确保 SXSSF 不会尝试重写已刷盘的行。
+            Sheet outSheet = outWb.createSheet("Sheet1");
+            for (int i = 0; i <= bSheet.getLastRowNum(); i++) {
+                Row src = bSheet.getRow(i);
+                Row dst = outSheet.createRow(i);
+                if (src == null) continue;
+                for (int j = 0; j < src.getLastCellNum(); j++) {
+                    Cell srcCell = src.getCell(j);
+                    Cell dstCell = dst.createCell(j);
+                    if (srcCell != null) ExcelUtils.copyCellValue(srcCell, dstCell);
+                }
+
+                if (i == 0) continue;
+                String bKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(src.getCell(bKeyIdx)));
+                StringBuilder appendedValues = aKeyToValues.get(bKey);
+                if (bKey == null || bKey.isEmpty() || appendedValues == null || appendedValues.length() == 0) {
+                    continue;
+                }
+                Cell cell = dst.getCell(bValIdx);
+                if (cell == null) cell = dst.createCell(bValIdx);
+                String currentVal = ExcelUtils.getCellValueAsString(cell);
+                String accumulatedVal = currentVal == null || currentVal.isEmpty()
+                        ? appendedValues.toString()
+                        : currentVal + VALUE_SEPARATOR + appendedValues;
+                cell.setCellValue(accumulatedVal);
+                System.out.println("填充: 源表主键:" + bKey + " -> 目标表行:" + (dst.getRowNum() + 1) + "，累加值:" + accumulatedVal);
             }
             outWb.write(fos);
             ((SXSSFWorkbook) outWb).dispose();
