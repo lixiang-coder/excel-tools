@@ -27,6 +27,8 @@ import java.awt.Color;
 @Deprecated
 public class CrossSheetFiller {
     private static final Logger logger = LogManager.getLogger(CrossSheetFiller.class);
+    private static final String VALUE_SEPARATOR = "|";
+
     /**
      * 执行跨表主键数据填充（带进度监听）
      */
@@ -115,12 +117,17 @@ public class CrossSheetFiller {
                 String aVal = ExcelUtils.getCellValueAsString(aRow.getCell(aValIdx));
                 if (aKey == null || aKey.isEmpty()) continue;
                 java.util.List<Row> bRows = bKeyToRows.get(aKey);
-                if (bRows != null) {
+                if (bRows != null && aVal != null && !aVal.isEmpty()) {
                     for (Row bRow : bRows) {
                         Cell cell = bRow.getCell(bValIdx);
                         if (cell == null) cell = bRow.createCell(bValIdx);
-                        cell.setCellValue(aVal);
-                        System.out.println("填充: 源表主键:" + aKey + " -> 目标表行:" + (bRow.getRowNum() + 1) + "，值:" + aVal);
+                        String currentVal = ExcelUtils.getCellValueAsString(cell);
+                        // 保留每个目标行自己的原值，并按源表行顺序逐次追加；不去重以完整保留重复源数据。
+                        String accumulatedVal = currentVal == null || currentVal.isEmpty()
+                                ? aVal
+                                : currentVal + VALUE_SEPARATOR + aVal;
+                        cell.setCellValue(accumulatedVal);
+                        System.out.println("填充: 源表主键:" + aKey + " -> 目标表行:" + (bRow.getRowNum() + 1) + "，累加值:" + accumulatedVal);
                     }
                 }
                 if (progressListener != null && (cur % 100 == 0 || cur == total)) {
