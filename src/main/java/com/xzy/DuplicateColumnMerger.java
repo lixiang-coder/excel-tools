@@ -17,10 +17,13 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Excel工具类：按指定重复列合并多行数据。
@@ -35,67 +38,8 @@ public class DuplicateColumnMerger {
      * 合并Excel中指定列（重复列）相同的多行数据
      */
     public void mergeByKeyColumn(String inputFilePath, String outputFilePath, String keyColumn) throws IOException {
-        File inputFile = new File(inputFilePath);
-        File outputFile = new File(outputFilePath);
-        if (!inputFile.exists() || !inputFile.canRead()) {
-            throw new IOException("无法读取源文件: " + inputFilePath + "，请检查文件是否存在、权限是否正确，或是否被其他程序占用。");
-        }
-        try (SafeExport export = SafeExport.begin(outputFile, inputFile)) {
-            try (FileInputStream fis = new FileInputStream(inputFile);
-                 Workbook workbook = WorkbookFactory.create(fis);
-                 SXSSFWorkbook outputWorkbook = new SXSSFWorkbook();
-                 FileOutputStream fos = new FileOutputStream(export.temporaryFile())) {
-                Sheet sheet = workbook.getSheetAt(0);
-                if (sheet == null) throw new IOException("源文件没有数据，请检查文件内容。");
-                Row headerRow = sheet.getRow(0);
-                if (headerRow == null) throw new IOException("源文件没有表头，请检查文件格式。");
-                int colCount = headerRow.getLastCellNum();
-                int keyCol = -1;
-                java.util.List<String> headers = new java.util.ArrayList<>();
-                for (int i = 0; i < colCount; i++) {
-                    Cell cell = headerRow.getCell(i);
-                    String h = (cell != null) ? cell.getStringCellValue() : null;
-                    headers.add(h);
-                    if (keyColumn.equalsIgnoreCase(h)) keyCol = i;
-                }
-                if (keyCol == -1) throw new IOException("未找到重复列 '" + keyColumn + "'，请检查表头。");
-                Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
-                for (int i = 1; i <= sheet.getLastRowNum(); i++) {
-                    Row row = sheet.getRow(i);
-                    if (row == null) continue;
-                    Cell keyCell = row.getCell(keyCol);
-                    String key = (keyCell != null) ? ExcelUtils.getCellValueAsString(keyCell) : null;
-                    if (key == null || key.isEmpty()) continue;
-                    java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(key, k -> {
-                        java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
-                        for (int j = 0; j < colCount; j++) l.add(new java.util.ArrayList<>());
-                        return l;
-                    });
-                    for (int j = 0; j < colCount; j++) {
-                        Cell cell = row.getCell(j);
-                        String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
-                        if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
-                    }
-                }
-                Sheet outSheet = outputWorkbook.createSheet("Sheet1");
-                Row outHeader = outSheet.createRow(0);
-                for (int i = 0; i < headers.size(); i++) {
-                    outHeader.createCell(i).setCellValue(headers.get(i));
-                }
-                int rowNum = 1;
-                for (Map.Entry<String, java.util.List<java.util.List<String>>> entry : merged.entrySet()) {
-                    Row outRow = outSheet.createRow(rowNum++);
-                    java.util.List<java.util.List<String>> colVals = entry.getValue();
-                    for (int j = 0; j < colVals.size(); j++) {
-                        Set<String> uniq = new LinkedHashSet<>(colVals.get(j));
-                        String mergedVal = String.join(SEPARATOR, uniq);
-                        outRow.createCell(j).setCellValue(mergedVal);
-                    }
-                }
-                outputWorkbook.write(fos);
-                outputWorkbook.dispose();
-            }
-            export.commit();
+        try {
+            merge(inputFilePath, outputFilePath, keyColumn, header -> true, null);
         } catch (Exception e) {
             throw new IOException("处理Excel文件时发生错误: " + e.getMessage(), e);
         }
@@ -272,15 +216,15 @@ public class DuplicateColumnMerger {
                 JDialog progressDialog = createProgressDialog(frame, "处理中", "正在合并数据...", false, progressBarHolder, percentLabelHolder);
                 JProgressBar progressBar = progressBarHolder[0];
                 JLabel percentLabel = percentLabelHolder[0];
-                SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
+                SwingWorker<MergeReport, Integer> worker = new SwingWorker<MergeReport, Integer>() {
                     @Override
-                    protected Void doInBackground() {
+                    protected MergeReport doInBackground() {
                         try {
-                            new DuplicateColumnMerger().mergeByCustomerIdWithProgress(inPath, outPath, customerIdCol, mergeCols, (cur, total) -> publish((int) (cur * 100.0 / total)));
+                            return new DuplicateColumnMerger().mergeWithReport(inPath, outPath, customerIdCol, mergeCols,
+                                    (cur, total) -> publish((int) (cur * 100.0 / total)));
                         } catch (Exception ex) {
                             throw new RuntimeException(ex);
                         }
-                        return null;
                     }
                     @Override
                     protected void process(java.util.List<Integer> chunks) {
@@ -298,9 +242,11 @@ public class DuplicateColumnMerger {
                 worker.execute();
                 progressDialog.setVisible(true);
                 try {
-                    worker.get();
-                    status.setText("处理完成: " + outPath);
-                    JOptionPane.showMessageDialog(frame, "处理完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
+                    MergeReport report = worker.get();
+                    String summary = report.formatSummary();
+                    status.setText("处理完成: " + summary);
+                    JOptionPane.showMessageDialog(frame, "处理完成！\n" + summary + "\n结果已保存到: " + outPath,
+                            "成功", JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception ex) {
                     status.setText("失败: " + ex.getMessage());
                     JOptionPane.showMessageDialog(frame, "失败: " + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
@@ -309,79 +255,166 @@ public class DuplicateColumnMerger {
         });
     }
 
-    public void mergeByCustomerIdWithProgress(String inputFilePath, String outputFilePath, String customerIdCol, java.util.List<String> mergeCols, ProgressListener progressListener) throws IOException {
-        File inputFile = new File(inputFilePath);
-        File outputFile = new File(outputFilePath);
-        if (!inputFile.exists() || !inputFile.canRead()) {
-            throw new IOException("无法读取源文件: " + inputFilePath);
+    public void mergeByCustomerIdWithProgress(String inputFilePath, String outputFilePath, String keyColumn,
+                                               List<String> mergeCols, ProgressListener progress) throws IOException {
+        mergeWithReport(inputFilePath, outputFilePath, keyColumn, mergeCols, progress);
+    }
+
+    public MergeReport mergeWithReport(String inputFilePath, String outputFilePath, String keyColumn,
+                                       List<String> mergeCols, ProgressListener progress) throws IOException {
+        return merge(inputFilePath, outputFilePath, keyColumn, mergeCols::contains, progress);
+    }
+
+    private MergeReport merge(String inputPath, String outputPath, String keyColumn,
+                              Predicate<String> shouldMerge, ProgressListener progress) throws IOException {
+        File input = new File(inputPath);
+        if (!input.isFile() || !input.canRead()) {
+            throw new IOException("无法读取源文件: " + inputPath);
         }
-        try (SafeExport export = SafeExport.begin(outputFile, inputFile)) {
-            try (FileInputStream fis = new FileInputStream(inputFile);
-                 Workbook workbook = WorkbookFactory.create(fis);
-                 Workbook outputWorkbook = new SXSSFWorkbook(100);
-                 FileOutputStream fos = new FileOutputStream(export.temporaryFile())) {
-                Sheet sheet = workbook.getSheetAt(0);
-                if (sheet == null) throw new IOException("源文件没有数据");
-                Row headerRow = sheet.getRow(0);
-                if (headerRow == null) throw new IOException("源文件没有表头");
-                int colCount = headerRow.getLastCellNum();
-                int customerIdColIdx = -1;
-                java.util.List<Integer> mergeColIdxs = new java.util.ArrayList<>();
-                java.util.List<String> headers = new java.util.ArrayList<>();
-                for (int i = 0; i < colCount; i++) {
-                    Cell cell = headerRow.getCell(i);
-                    String h = (cell != null) ? cell.getStringCellValue() : null;
-                    headers.add(h);
-                    if (customerIdCol.equalsIgnoreCase(h)) customerIdColIdx = i;
-                    if (mergeCols.contains(h)) mergeColIdxs.add(i);
-                }
-                if (customerIdColIdx == -1) throw new IOException("未找到CustomerId列");
-                Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
-                int totalRows = sheet.getLastRowNum();
-                for (int i = 1; i <= totalRows; i++) {
-                    Row row = sheet.getRow(i);
-                    if (row == null) continue;
-                    Cell cidCell = row.getCell(customerIdColIdx);
-                    String cid = (cidCell != null) ? ExcelUtils.getCellValueAsString(cidCell) : null;
-                    if (cid == null || cid.isEmpty()) continue;
-                    java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(cid, k -> {
-                        java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
-                        for (int j = 0; j < colCount; j++) l.add(new java.util.ArrayList<>());
-                        return l;
-                    });
-                    for (int j = 0; j < colCount; j++) {
-                        Cell cell = row.getCell(j);
-                        String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
-                        if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
+        try (SafeExport export = SafeExport.begin(new File(outputPath), input)) {
+            MergeReport report;
+            try (FileInputStream in = new FileInputStream(input);
+                 Workbook source = WorkbookFactory.create(in);
+                 SXSSFWorkbook result = new SXSSFWorkbook(100)) {
+                try {
+                    Sheet sourceSheet = source.getSheetAt(0);
+                    Row header = sourceSheet.getRow(0);
+                    if (header == null) throw new IOException("源文件没有表头");
+                    int keyIndex = -1;
+                    boolean[] mergeColumns = new boolean[Math.max(0, header.getLastCellNum())];
+                    Sheet output = result.createSheet("Sheet1");
+                    Row outputHeader = output.createRow(0);
+                    for (int column = 0; column < mergeColumns.length; column++) {
+                        Cell headerCell = header.getCell(column);
+                        String name = headerCell == null ? "" : headerCell.getStringCellValue();
+                        if (!name.isEmpty() && keyColumn.equalsIgnoreCase(name)) keyIndex = column;
+                        mergeColumns[column] = shouldMerge.test(name);
+                        if (headerCell != null) outputHeader.createCell(column).setCellValue(name);
                     }
-                    if (progressListener != null && (i % 100 == 0 || i == totalRows)) {
-                        progressListener.onProgress(i, totalRows);
+                    if (keyIndex == -1) throw new IOException("未找到重复列 '" + keyColumn + "'");
+                    report = mergeRows(sourceSheet, output, keyIndex, mergeColumns, progress);
+                    try (FileOutputStream out = new FileOutputStream(export.temporaryFile())) {
+                        result.write(out);
                     }
+                } finally {
+                    result.dispose();
                 }
-                Sheet outSheet = outputWorkbook.createSheet("Sheet1");
-                Row outHeader = outSheet.createRow(0);
-                for (int i = 0; i < headers.size(); i++) {
-                    outHeader.createCell(i).setCellValue(headers.get(i));
-                }
-                int rowNum = 1;
-                for (Map.Entry<String, java.util.List<java.util.List<String>>> entry : merged.entrySet()) {
-                    Row outRow = outSheet.createRow(rowNum++);
-                    java.util.List<java.util.List<String>> colVals = entry.getValue();
-                    for (int j = 0; j < colVals.size(); j++) {
-                        Set<String> uniq = new LinkedHashSet<>(colVals.get(j));
-                        String mergedVal;
-                        if (mergeColIdxs.contains(j)) {
-                            mergedVal = String.join(SEPARATOR, uniq);
-                        } else {
-                            mergedVal = uniq.isEmpty() ? "" : uniq.iterator().next();
-                        }
-                        outRow.createCell(j).setCellValue(mergedVal);
-                    }
-                }
-                outputWorkbook.write(fos);
-                ((SXSSFWorkbook) outputWorkbook).dispose();
             }
             export.commit();
+            return report;
+        }
+    }
+
+    private static MergeReport mergeRows(Sheet source, Sheet output, int keyIndex,
+                                         boolean[] mergeColumns, ProgressListener progress) {
+        Map<String, List<Row>> keyedGroups = new HashMap<>();
+        // 每个正常主键仅登记首行，空主键的数据行各自登记，二者保持输入顺序。
+        List<Row> outputOrder = new ArrayList<>();
+        int inputRows = 0;
+        int blankKeyRows = 0;
+        int lastRow = source.getLastRowNum();
+        for (Row row : source) {
+            int rowIndex = row.getRowNum();
+            if (rowIndex == 0) continue;
+            Cell keyCell = row.getCell(keyIndex);
+            String key = ExcelUtils.getCellValueAsString(keyCell);
+            if (!isBlank(key)) {
+                List<Row> group = keyedGroups.get(key);
+                if (group == null) {
+                    group = new ArrayList<>();
+                    keyedGroups.put(key, group);
+                    outputOrder.add(row);
+                }
+                group.add(row);
+                inputRows++;
+            } else if (hasData(row)) {
+                outputOrder.add(row);
+                inputRows++;
+                // 错误值也不参加分组，但不是空主键。
+                if (!isErrorCell(keyCell)) blankKeyRows++;
+            }
+            if (progress != null && (rowIndex % 100 == 0 || rowIndex == lastRow)) {
+                progress.onProgress(rowIndex, lastRow);
+            }
+        }
+        int outputRows = 0;
+        for (Row first : outputOrder) {
+            Row target = output.createRow(++outputRows);
+            List<Row> group = keyedGroups.get(ExcelUtils.getCellValueAsString(first.getCell(keyIndex)));
+            if (group == null) {
+                writeIndependentRow(first, target, keyIndex);
+            } else {
+                writeGroup(group, target, mergeColumns);
+            }
+        }
+        return new MergeReport(inputRows, outputRows, blankKeyRows);
+    }
+
+    private static void writeGroup(List<Row> rows, Row target, boolean[] mergeColumns) {
+        for (int column = 0; column < mergeColumns.length; column++) {
+            Set<String> values = new LinkedHashSet<>();
+            for (Row row : rows) {
+                String text = ExcelUtils.getCellValueAsString(row.getCell(column));
+                if (!text.isEmpty()) {
+                    values.add(text);
+                    if (!mergeColumns[column]) break;
+                }
+            }
+            target.createCell(column).setCellValue(String.join(SEPARATOR, values));
+        }
+    }
+
+    private static void writeIndependentRow(Row source, Row target, int keyIndex) {
+        for (Cell cell : source) {
+            String value = independentCellText(cell);
+            if (value.isEmpty() || (cell.getColumnIndex() == keyIndex && isBlank(value))) continue;
+            target.createCell(cell.getColumnIndex()).setCellValue(value);
+        }
+    }
+
+    private static boolean hasData(Row row) {
+        for (Cell cell : row) {
+            if (!isBlank(independentCellText(cell))) return true;
+        }
+        return false;
+    }
+
+    private static String independentCellText(Cell cell) {
+        if (isErrorCell(cell)) return FormulaError.forInt(cell.getErrorCellValue()).getString();
+        if (cell != null && cell.getCellType() == CellType.STRING) return cell.getStringCellValue();
+        return ExcelUtils.getCellValueAsString(cell);
+    }
+
+    private static boolean isErrorCell(Cell cell) {
+        return cell != null && (cell.getCellType() == CellType.ERROR ||
+                (cell.getCellType() == CellType.FORMULA && cell.getCachedFormulaResultType() == CellType.ERROR));
+    }
+
+    private static boolean isBlank(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (!Character.isWhitespace(c) && !Character.isSpaceChar(c)) return false;
+        }
+        return true;
+    }
+
+    public static final class MergeReport {
+        private final int inputRows;
+        private final int outputRows;
+        private final int blankKeyRows;
+
+        private MergeReport(int inputRows, int outputRows, int blankKeyRows) {
+            this.inputRows = inputRows;
+            this.outputRows = outputRows;
+            this.blankKeyRows = blankKeyRows;
+        }
+
+        public int getInputRows() { return inputRows; }
+        public int getOutputRows() { return outputRows; }
+        public int getBlankKeyRows() { return blankKeyRows; }
+
+        public String formatSummary() {
+            return "有效输入 " + inputRows + " 行，输出 " + outputRows + " 行，其中空主键逐条保留 " + blankKeyRows + " 行。";
         }
     }
 

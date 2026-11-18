@@ -125,14 +125,14 @@ public class DuplicateColPanel {
             String customerIdCol = (String) customerIdCombo.getSelectedItem();
             java.util.List<String> mergeCols = mergeColsList.getSelectedValuesList();
             ProgressDialog progressDialog = ProgressDialog.create(ctx.getMainFrame(), "处理中");
-            SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
+            SwingWorker<DuplicateColumnMerger.MergeReport, Integer> worker =
+                    new SwingWorker<DuplicateColumnMerger.MergeReport, Integer>() {
                 @Override
-                protected Void doInBackground() {
+                protected DuplicateColumnMerger.MergeReport doInBackground() {
                     try {
-                        new DuplicateColumnMerger().mergeByCustomerIdWithProgress(inPath, outPath, customerIdCol, mergeCols,
+                        return new DuplicateColumnMerger().mergeWithReport(inPath, outPath, customerIdCol, mergeCols,
                                 (cur, total) -> publish((int) (cur * 100.0 / total)));
                     } catch (Exception ex) { throw new RuntimeException(ex); }
-                    return null;
                 }
                 @Override
                 protected void process(java.util.List<Integer> chunks) {
@@ -149,9 +149,11 @@ public class DuplicateColPanel {
             worker.execute();
             progressDialog.dialog.setVisible(true);
             try {
-                worker.get();
+                DuplicateColumnMerger.MergeReport report = worker.get();
+                String summary = report.formatSummary();
                 ctx.log("处理完成: " + outPath);
-                JOptionPane.showMessageDialog(mainPanel, "处理完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
+                ctx.log(summary);
+                JOptionPane.showMessageDialog(mainPanel, "处理完成！\n" + summary, "成功", JOptionPane.INFORMATION_MESSAGE);
             } catch (Exception ex) {
                 ctx.log("失败: " + ex.getMessage());
                 JOptionPane.showMessageDialog(mainPanel, "失败: " + ex.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
