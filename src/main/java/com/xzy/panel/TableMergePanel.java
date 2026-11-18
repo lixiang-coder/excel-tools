@@ -3,6 +3,7 @@ package com.xzy.panel;
 import com.xzy.TableMerger;
 import com.xzy.model.AppContext;
 import com.xzy.model.ProgressDialog;
+import com.xzy.ui.Workbench;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -24,92 +25,79 @@ public class TableMergePanel {
     }
 
     public JPanel createPanel() {
-        JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-        JRadioButton sheetMode = new JRadioButton("单文件多Sheet合并", true);
-        JRadioButton fileMode = new JRadioButton("多文件合并");
+        JRadioButton sheetMode = new JRadioButton("单个文件的多个工作表", true);
+        JRadioButton fileMode = new JRadioButton("多个文件的首个工作表");
         ButtonGroup modeGroup = new ButtonGroup();
         modeGroup.add(sheetMode);
         modeGroup.add(fileMode);
+        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEADING, 0, 0));
+        modePanel.add(sheetMode);
+        modePanel.add(Box.createHorizontalStrut(16));
+        modePanel.add(fileMode);
+
         JComboBox<MergeStrategyOption> strategyCombo = new JComboBox<>(new MergeStrategyOption[]{
                 new MergeStrategyOption("自动识别（推荐）", TableMerger.MergeStrategy.AUTO),
                 new MergeStrategyOption("有表头合并", TableMerger.MergeStrategy.HEADER_BASED),
-                new MergeStrategyOption("无表头合并（WPS样式）", TableMerger.MergeStrategy.WPS_STYLE_NO_HEADER)
+                new MergeStrategyOption("无表头合并（WPS 样式）", TableMerger.MergeStrategy.WPS_STYLE_NO_HEADER)
         });
+        JLabel strategyLabel = new JLabel("表头处理");
+        strategyLabel.setLabelFor(strategyCombo);
+        JPanel strategyPanel = new JPanel(new FlowLayout(FlowLayout.LEADING, 0, 0));
+        strategyPanel.add(strategyLabel);
+        strategyPanel.add(Box.createHorizontalStrut(12));
+        strategyPanel.add(strategyCombo);
 
-        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 16, 5));
-        modePanel.setBorder(BorderFactory.createTitledBorder("合并模式"));
-        modePanel.add(sheetMode);
-        modePanel.add(fileMode);
-        modePanel.add(new JLabel("数据结构:"));
-        modePanel.add(strategyCombo);
-        mainPanel.add(modePanel);
+        JPanel optionsPanel = new JPanel(new BorderLayout(0, 10));
+        optionsPanel.add(modePanel, BorderLayout.NORTH);
+        optionsPanel.add(strategyPanel, BorderLayout.CENTER);
+        optionsPanel.add(new JLabel("<html>有表头时，以首张有效表的表头为准。<br>"
+                + "无表头时，生成报告和总表，并在总表首列标记来源。</html>"), BorderLayout.SOUTH);
 
-        JPanel filePanel = new JPanel(new GridBagLayout());
-        filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 8, 8, 8);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.weightx = 1;
-
-        JTextArea selectedFilesArea = new JTextArea(6, 60);
+        JTextArea selectedFilesArea = new JTextArea(3, 16);
         selectedFilesArea.setEditable(false);
         selectedFilesArea.setLineWrap(true);
         selectedFilesArea.setWrapStyleWord(true);
-
-        JButton selectInputButton = new JButton("选择输入文件");
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.gridwidth = 1;
-        gbc.weightx = 0;
-        filePanel.add(new JLabel("输入文件:"), gbc);
-        gbc.gridx = 1;
-        gbc.gridy = 0;
-        gbc.gridwidth = 2;
-        gbc.weightx = 1;
-        filePanel.add(new JScrollPane(selectedFilesArea), gbc);
-        gbc.gridx = 3;
-        gbc.gridy = 0;
-        gbc.gridwidth = 1;
-        gbc.weightx = 0;
-        filePanel.add(selectInputButton, gbc);
-
         JTextField outputPath = new JTextField();
         outputPath.setEditable(false);
+        JButton selectInputButton = new JButton("选择输入文件");
         JButton selectOutputButton = new JButton("选择输出文件");
+
+        JPanel filePanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.anchor = GridBagConstraints.LINE_START;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.insets = new Insets(0, 0, 8, 12);
+        JLabel inputLabel = new JLabel("输入文件");
+        inputLabel.setLabelFor(selectedFilesArea);
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        filePanel.add(inputLabel, gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        filePanel.add(new JScrollPane(selectedFilesArea), gbc);
+        gbc.gridx = 2;
+        gbc.weightx = 0;
+        gbc.insets = new Insets(0, 0, 8, 0);
+        filePanel.add(selectInputButton, gbc);
+
+        JLabel outputLabel = new JLabel("输出文件");
+        outputLabel.setLabelFor(outputPath);
         gbc.gridx = 0;
         gbc.gridy = 1;
-        gbc.gridwidth = 1;
-        filePanel.add(new JLabel("输出文件:"), gbc);
+        gbc.insets = new Insets(0, 0, 0, 12);
+        filePanel.add(outputLabel, gbc);
         gbc.gridx = 1;
-        gbc.gridy = 1;
-        gbc.gridwidth = 2;
         gbc.weightx = 1;
         filePanel.add(outputPath, gbc);
-        gbc.gridx = 3;
-        gbc.gridy = 1;
-        gbc.gridwidth = 1;
+        gbc.gridx = 2;
         gbc.weightx = 0;
+        gbc.insets = new Insets(0, 0, 0, 0);
         filePanel.add(selectOutputButton, gbc);
-        mainPanel.add(filePanel);
 
-        JPanel infoPanel = new JPanel(new BorderLayout());
-        infoPanel.setBorder(BorderFactory.createTitledBorder("合并规则"));
-        JTextArea infoArea = new JTextArea();
-        infoArea.setEditable(false);
-        infoArea.setLineWrap(true);
-        infoArea.setWrapStyleWord(true);
-        infoArea.setText("自动识别会判断数据是否有表头；无表头时按WPS样式输出“报告”和“总表”，并在总表第1列添加来源标识。有表头时仍以第一张有效表的表头为准。");
-        infoPanel.add(infoArea, BorderLayout.CENTER);
-        mainPanel.add(infoPanel);
-
-        JPanel opPanel = new JPanel(new BorderLayout(10, 10));
-        JButton runButton = new JButton("开始合并");
-        opPanel.add(runButton, BorderLayout.CENTER);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(opPanel);
+        JButton runButton = Workbench.primaryButton("开始合并");
+        JPanel mainPanel = Workbench.formPage(runButton,
+                Workbench.formSection("合并设置", optionsPanel),
+                Workbench.formSection("输入与输出", filePanel));
 
         sheetMode.addActionListener(e -> clearInputs(selectedFilesArea));
         fileMode.addActionListener(e -> clearInputs(selectedFilesArea));

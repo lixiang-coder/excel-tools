@@ -3,6 +3,7 @@ package com.xzy.panel;
 import com.xzy.CrossSheetFiller;
 import com.xzy.model.AppContext;
 import com.xzy.model.ProgressDialog;
+import com.xzy.ui.Workbench;
 import com.xzy.util.ExcelUtils;
 
 import javax.swing.*;
@@ -21,114 +22,21 @@ public class CrossSheetPanel {
     }
 
     public JPanel createPanel() {
-        Font uiFont = new Font("Microsoft YaHei", Font.PLAIN, 16);
-        JPanel filePanel = new JPanel(new GridBagLayout());
-        filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 8, 8, 8);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.weightx = 1;
         JTextField aPath = new JTextField();
         JTextField bPath = new JTextField();
-        aPath.setEditable(false);
-        bPath.setEditable(false);
         JButton selA = new JButton("选择源表");
         JButton selB = new JButton("选择目标表");
-        Font btnFont = new Font("Microsoft YaHei", Font.BOLD, 16);
-        selA.setFont(btnFont);
-        selB.setFont(btnFont);
-        selA.setBorderPainted(false);
-        selB.setBorderPainted(false);
-        selA.setFocusPainted(false);
-        selB.setFocusPainted(false);
-        selA.setOpaque(true);
-        selB.setOpaque(true);
-        Color blue = new Color(66, 133, 244);
-        Color grayBg = new Color(220, 220, 220);
-        Color grayFont = new Color(120, 120, 120);
-        java.util.function.BiConsumer<JButton, Boolean> setButtonVisualEnabled = (btn, enabled) -> {
-            if (enabled) {
-                btn.setBackground(blue);
-                btn.setForeground(Color.WHITE);
-            } else {
-                btn.setBackground(grayBg);
-                btn.setForeground(grayFont);
-            }
-            btn.setBorder(BorderFactory.createEmptyBorder());
-            btn.setFocusPainted(false);
-            btn.setOpaque(true);
-        };
-        setButtonVisualEnabled.accept(selA, true);
-        setButtonVisualEnabled.accept(selB, true);
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
-        filePanel.add(new JLabel("源表路径:"), gbc);
-        gbc.gridx = 1; gbc.gridy = 0; gbc.gridwidth = 2;
-        filePanel.add(aPath, gbc);
-        gbc.gridx = 3; gbc.gridy = 0; gbc.gridwidth = 1;
-        filePanel.add(selA, gbc);
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1;
-        filePanel.add(new JLabel("目标表路径:"), gbc);
-        gbc.gridx = 1; gbc.gridy = 1; gbc.gridwidth = 2;
-        filePanel.add(bPath, gbc);
-        gbc.gridx = 3; gbc.gridy = 1; gbc.gridwidth = 1;
-        filePanel.add(selB, gbc);
-
-        JPanel headerPanel = new JPanel(new GridLayout(2, 1, 5, 5));
-        headerPanel.setBorder(BorderFactory.createTitledBorder("表头展示区"));
-        JTextArea aHeadersArea = new JTextArea(2, 40);
-        aHeadersArea.setEditable(false);
-        aHeadersArea.setLineWrap(true);
-        aHeadersArea.setBorder(BorderFactory.createTitledBorder("源表表头"));
-        JTextArea bHeadersArea = new JTextArea(2, 40);
-        bHeadersArea.setEditable(false);
-        bHeadersArea.setLineWrap(true);
-        bHeadersArea.setBorder(BorderFactory.createTitledBorder("目标表表头"));
-        headerPanel.add(new JScrollPane(aHeadersArea));
-        headerPanel.add(new JScrollPane(bHeadersArea));
-
-        JPanel mapPanel = new JPanel(new GridBagLayout());
-        mapPanel.setBorder(BorderFactory.createTitledBorder("表头映射区"));
+        JTextArea aHeadersArea = new JTextArea(2, 16);
+        JTextArea bHeadersArea = new JTextArea(2, 16);
         JComboBox<String> aKeyCombo = new JComboBox<>();
         JComboBox<String> aValCombo = new JComboBox<>();
         JComboBox<String> bKeyCombo = new JComboBox<>();
         JComboBox<String> bValCombo = new JComboBox<>();
-        aKeyCombo.setFont(uiFont); aValCombo.setFont(uiFont);
-        bKeyCombo.setFont(uiFont); bValCombo.setFont(uiFont);
-        aKeyCombo.setPreferredSize(new Dimension(180, 32));
-        aValCombo.setPreferredSize(new Dimension(180, 32));
-        bKeyCombo.setPreferredSize(new Dimension(180, 32));
-        bValCombo.setPreferredSize(new Dimension(180, 32));
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
-        mapPanel.add(new JLabel("源表匹配表头:"), gbc);
-        gbc.gridx = 1; gbc.gridy = 0;
-        mapPanel.add(aKeyCombo, gbc);
-        gbc.gridx = 2; gbc.gridy = 0;
-        mapPanel.add(new JLabel("源表数据表头:"), gbc);
-        gbc.gridx = 3; gbc.gridy = 0;
-        mapPanel.add(aValCombo, gbc);
-        gbc.gridx = 0; gbc.gridy = 1;
-        mapPanel.add(new JLabel("目标表匹配表头:"), gbc);
-        gbc.gridx = 1; gbc.gridy = 1;
-        mapPanel.add(bKeyCombo, gbc);
-        gbc.gridx = 2; gbc.gridy = 1;
-        mapPanel.add(new JLabel("目标表填充表头:"), gbc);
-        gbc.gridx = 3; gbc.gridy = 1;
-        mapPanel.add(bValCombo, gbc);
+        JButton runBtn = Workbench.primaryButton("开始填充");
 
-        JPanel opPanel = new JPanel(new BorderLayout(10, 10));
-        JButton runBtn = new JButton("开始填充");
-        opPanel.add(runBtn, BorderLayout.CENTER);
-
-        JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        mainPanel.add(filePanel);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(headerPanel);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(mapPanel);
-        mainPanel.add(Box.createVerticalStrut(10));
-        mainPanel.add(opPanel);
+        JPanel mainPanel = Workbench.formPage(runBtn,
+                workbookSection("源工作表", aPath, selA, aHeadersArea, aKeyCombo, "读取数据的列", aValCombo),
+                workbookSection("目标工作表", bPath, selB, bHeadersArea, bKeyCombo, "填入数据的列", bValCombo));
 
         // 事件
         selA.addActionListener(e -> {
@@ -256,5 +164,44 @@ public class CrossSheetPanel {
             }
         });
         return mainPanel;
+    }
+
+    private static JPanel workbookSection(String title, JTextField path, JButton select, JTextArea headers,
+                                          JComboBox<String> key, String valueLabel, JComboBox<String> value) {
+        path.setEditable(false);
+        path.getAccessibleContext().setAccessibleName(title + "路径");
+        JPanel fileRow = new JPanel(new BorderLayout(12, 0));
+        fileRow.add(path, BorderLayout.CENTER);
+        fileRow.add(select, BorderLayout.LINE_END);
+
+        headers.setEditable(false);
+        headers.setLineWrap(true);
+        headers.setWrapStyleWord(true);
+        JLabel headersLabel = new JLabel("表头预览");
+        headersLabel.setLabelFor(headers);
+        JPanel preview = new JPanel(new BorderLayout(12, 0));
+        preview.add(headersLabel, BorderLayout.LINE_START);
+        preview.add(new JScrollPane(headers), BorderLayout.CENTER);
+
+        key.setPrototypeDisplayValue("用于匹配的表头");
+        value.setPrototypeDisplayValue("待填充的表头");
+        JPanel columns = new JPanel(new GridLayout(1, 2, 16, 0));
+        columns.add(columnSelector("主键列", key));
+        columns.add(columnSelector(valueLabel, value));
+
+        JPanel content = new JPanel(new BorderLayout(0, 10));
+        content.add(fileRow, BorderLayout.NORTH);
+        content.add(preview, BorderLayout.CENTER);
+        content.add(columns, BorderLayout.SOUTH);
+        return Workbench.formSection(title, content);
+    }
+
+    private static JPanel columnSelector(String name, JComboBox<String> combo) {
+        JLabel label = new JLabel(name);
+        label.setLabelFor(combo);
+        JPanel field = new JPanel(new BorderLayout(8, 0));
+        field.add(label, BorderLayout.LINE_START);
+        field.add(combo, BorderLayout.CENTER);
+        return field;
     }
 }

@@ -3,6 +3,7 @@ package com.xzy.panel;
 import com.xzy.DuplicateColumnMerger;
 import com.xzy.model.AppContext;
 import com.xzy.model.ProgressDialog;
+import com.xzy.ui.Workbench;
 import com.xzy.util.ExcelUtils;
 
 import javax.swing.*;
@@ -21,49 +22,42 @@ public class DuplicateColPanel {
     }
 
     public JPanel createPanel() {
-        JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        JPanel filePanel = new JPanel(new GridBagLayout());
-        filePanel.setBorder(BorderFactory.createTitledBorder("文件选择区"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 8, 8, 8);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.weightx = 1;
         JTextField inputPath = new JTextField();
         inputPath.setEditable(false);
+        inputPath.getAccessibleContext().setAccessibleName("输入文件路径");
         JButton selectInput = new JButton("选择输入文件");
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
-        filePanel.add(new JLabel("输入文件路径:"), gbc);
-        gbc.gridx = 1; gbc.gridy = 0; gbc.gridwidth = 2;
-        filePanel.add(inputPath, gbc);
-        gbc.gridx = 3; gbc.gridy = 0; gbc.gridwidth = 1;
-        filePanel.add(selectInput, gbc);
-        mainPanel.add(filePanel);
+        JPanel filePanel = new JPanel(new BorderLayout(12, 0));
+        filePanel.add(inputPath, BorderLayout.CENTER);
+        filePanel.add(selectInput, BorderLayout.LINE_END);
 
-        JPanel headerPanel = new JPanel(new GridBagLayout());
-        headerPanel.setBorder(BorderFactory.createTitledBorder("表头选择区"));
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(new JLabel("重复列:"), gbc);
         JComboBox<String> customerIdCombo = new JComboBox<>();
-        customerIdCombo.setPreferredSize(new Dimension(180, 28));
-        gbc.gridx = 1; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(customerIdCombo, gbc);
-        gbc.gridx = 2; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(new JLabel("要合并的列(可多选):"), gbc);
+        customerIdCombo.setPrototypeDisplayValue("用于判断重复记录的字段");
+        JLabel keyLabel = new JLabel("用于判断重复的列");
+        keyLabel.setLabelFor(customerIdCombo);
+        JPanel keyField = new JPanel(new BorderLayout(0, 6));
+        keyField.add(keyLabel, BorderLayout.NORTH);
+        keyField.add(customerIdCombo, BorderLayout.CENTER);
+        JPanel keyColumn = new JPanel(new BorderLayout());
+        keyColumn.add(keyField, BorderLayout.NORTH);
+
         DefaultListModel<String> mergeColsModel = new DefaultListModel<>();
         JList<String> mergeColsList = new JList<>(mergeColsModel);
         mergeColsList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        JScrollPane mergeColsScroll = new JScrollPane(mergeColsList);
-        mergeColsScroll.setPreferredSize(new Dimension(220, 150));
-        gbc.gridx = 3; gbc.gridy = 0; gbc.gridwidth = 1;
-        headerPanel.add(mergeColsScroll, gbc);
-        mainPanel.add(headerPanel);
+        mergeColsList.setVisibleRowCount(5);
+        JLabel mergeLabel = new JLabel("要合并的列（按住 Ctrl 可多选）");
+        mergeLabel.setLabelFor(mergeColsList);
+        JPanel mergeColumn = new JPanel(new BorderLayout(0, 6));
+        mergeColumn.add(mergeLabel, BorderLayout.NORTH);
+        mergeColumn.add(new JScrollPane(mergeColsList), BorderLayout.CENTER);
 
-        JPanel opPanel = new JPanel(new BorderLayout(10, 10));
-        JButton runBtn = new JButton("开始合并");
-        opPanel.add(runBtn, BorderLayout.CENTER);
-        mainPanel.add(opPanel);
+        JPanel headerPanel = new JPanel(new GridLayout(1, 2, 16, 0));
+        headerPanel.add(keyColumn);
+        headerPanel.add(mergeColumn);
+
+        JButton runBtn = Workbench.primaryButton("开始合并");
+        JPanel mainPanel = Workbench.formPage(runBtn,
+                Workbench.formSection("输入文件", filePanel),
+                Workbench.formSection("字段设置", headerPanel));
 
         // 事件
         selectInput.addActionListener(e -> {

@@ -1,5 +1,8 @@
 package com.xzy;
 
+import com.xzy.ui.Workbench;
+import com.xzy.ui.WorkbookArt;
+import static com.formdev.flatlaf.util.UIScale.scale;
 import com.xzy.model.AppContext;
 import com.xzy.model.HeaderMapping;
 import com.xzy.model.MappingRelations;
@@ -84,289 +87,180 @@ public class ExcelTools {
     }
 
     private void initializeUI() {
-        // 初始化数据
         processorMappings = new HashMap<>();
         processorMappingOrder = new ArrayList<>();
-
-        // 创建主窗口
-        mainFrame = new JFrame("Excel工具集");
+        mainFrame = new JFrame("Excel 工具集");
         mainFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        mainFrame.setSize(1000, 700);
+        mainFrame.setIconImage(WorkbookArt.windowIcon());
+        Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+        mainFrame.setSize(Math.min(scale(1080), screen.width), Math.min(scale(700), screen.height));
+        mainFrame.setMinimumSize(new Dimension(Math.min(scale(660), screen.width), Math.min(scale(470), screen.height)));
         mainFrame.setLocationRelativeTo(null);
 
-        // 创建选项卡面板
-        tabbedPane = new JTabbedPane();
-
-        // 创建Excel处理器面板
-        JPanel processorPanel = createProcessorPanel();
-        tabbedPane.addTab("Excel处理器", processorPanel);
-
-        // 创建映射关系面板
-        JPanel mappingPanel = createMappingPanel();
-        tabbedPane.addTab("建立映射关系", mappingPanel);
-
-        // 创建应用映射面板
-        JPanel applyPanel = createApplyPanel();
-        tabbedPane.addTab("应用映射", applyPanel);
-
-        // 创建日志区域
-        JPanel logPanel = new JPanel(new BorderLayout());
-        logPanel.setBorder(BorderFactory.createTitledBorder("操作记录"));
-        logArea = new JTextArea();
-        logArea.setEditable(false);
-        JScrollPane logScrollPane = new JScrollPane(logArea);
-        logScrollPane.setPreferredSize(new Dimension(0, 100));
-        logPanel.add(logScrollPane, BorderLayout.CENTER);
-
-        // 创建状态标签
         statusLabel = new JLabel("就绪");
-
-        // 布局
-        JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        mainPanel.add(statusLabel, BorderLayout.NORTH);
-        mainPanel.add(tabbedPane, BorderLayout.CENTER);
-        mainPanel.add(logPanel, BorderLayout.SOUTH);
-
-        mainFrame.add(mainPanel);
-        mainFrame.setVisible(true);
-
-        // 集成跨表主键填充工具
+        logArea = new JTextArea(4, 0);
+        logArea.setEditable(false);
         AppContext ctx = new AppContext(mainFrame, logArea, statusLabel);
-        JPanel crossSheetPanel = new CrossSheetPanel(ctx).createPanel();
-        tabbedPane.addTab("跨表主键填充工具", crossSheetPanel);
-        // 集成重复列工具
-        JPanel duplicateColPanel = new DuplicateColPanel(ctx).createPanel();
-        tabbedPane.addTab("重复列工具", duplicateColPanel);
-        // 集成表格合并工具
-        JPanel tableMergePanel = new TableMergePanel(ctx).createPanel();
-        tabbedPane.addTab("表格合并", tableMergePanel);
+        tabbedPane = new JTabbedPane(JTabbedPane.TOP, JTabbedPane.SCROLL_TAB_LAYOUT);
+        tabbedPane.putClientProperty("JTabbedPane.leadingComponent", Workbench.brand());
+        tabbedPane.addTab("Excel 处理器", Workbench.page("字段映射",
+                "将源表数据按模板的列顺序导出，多个源字段可以合并到同一列。", createProcessorPanel()));
+        tabbedPane.addTab("建立映射", Workbench.page("建立映射关系",
+                "从关系表中选择一对字段，保存它们在每一行的对应值。", createMappingPanel()));
+        tabbedPane.addTab("应用映射", Workbench.page("应用映射",
+                "选择目标表中的查找字段和填充字段，使用已保存的对应关系填入数据。", createApplyPanel()));
+        tabbedPane.addTab("跨表填充", Workbench.page("跨表主键填充",
+                "按主键匹配两张表，将源表数据追加到目标表的指定列。", Workbench.scrollForm(new CrossSheetPanel(ctx).createPanel())));
+        tabbedPane.addTab("重复项合并", Workbench.page("重复记录合并",
+                "按指定列归组，对选中列的值去重后用 | 拼接。", Workbench.scrollForm(new DuplicateColPanel(ctx).createPanel())));
+        tabbedPane.addTab("表格合并", Workbench.page("表格合并",
+                "将多个工作表或文件合并为一张表，同时生成合并报告。", Workbench.scrollForm(new TableMergePanel(ctx).createPanel())));
+
+        mainFrame.add(tabbedPane, BorderLayout.CENTER);
+        mainFrame.add(createStatusBar(), BorderLayout.SOUTH);
+        mainFrame.setVisible(true);
+    }
+
+    private JPanel createStatusBar() {
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, new java.awt.Color(0xD6E0DA)));
+        JPanel bar = new JPanel(new BorderLayout(scale(12), 0));
+        bar.setBorder(BorderFactory.createEmptyBorder(scale(3), scale(24), scale(3), scale(16)));
+        statusLabel.setForeground(new java.awt.Color(0x426353));
+        bar.add(statusLabel);
+        JToggleButton toggle = new JToggleButton("展开操作记录");
+        toggle.putClientProperty("JButton.buttonType", "borderless");
+        bar.add(toggle, BorderLayout.LINE_END);
+        JScrollPane history = new JScrollPane(logArea);
+        history.setVisible(false);
+        toggle.addActionListener(e -> {
+            history.setVisible(toggle.isSelected());
+            toggle.setText(toggle.isSelected() ? "收起操作记录" : "展开操作记录");
+            footer.revalidate();
+        });
+        footer.add(bar, BorderLayout.NORTH);
+        footer.add(history);
+        return footer;
     }
 
     private JPanel createProcessorPanel() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        CardLayout view = new CardLayout();
+        JPanel cards = new JPanel(view);
+        cards.setOpaque(false);
+        JButton start = Workbench.primaryButton("选择文件");
+        cards.add(Workbench.welcome(start), "welcome");
 
-        // 创建顶部面板
-        JPanel topPanel = new JPanel(new BorderLayout(10, 10));
+        JPanel editor = new JPanel(new BorderLayout(0, scale(14)));
+        editor.setOpaque(false);
+        JButton select = new JButton("选择文件");
+        select.setToolTipText("选择源表和模板，保留已配置的映射");
+        JButton reload = new JButton("重新导入文件");
+        reload.setToolTipText("选择源表和模板，并清空已配置的映射");
+        JButton save = Workbench.primaryButton("保存文件");
+        save.setEnabled(false);
+        JPanel toolbar = new JPanel(new BorderLayout());
+        toolbar.setOpaque(false);
+        toolbar.add(Workbench.actions(select, reload), BorderLayout.LINE_START);
+        toolbar.add(save, BorderLayout.LINE_END);
+        editor.add(toolbar, BorderLayout.NORTH);
 
-        // 创建按钮面板
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
-
-        // 创建选择文件按钮
-        JButton selectFilesButton = new JButton("选择文件");
-        selectFilesButton.setPreferredSize(new Dimension(100, 30));
-        buttonPanel.add(selectFilesButton);
-
-        // 新增重新导入文件按钮
-        JButton reloadFilesButton = new JButton("重新导入文件");
-        reloadFilesButton.setPreferredSize(new Dimension(120, 30));
-        buttonPanel.add(reloadFilesButton);
-
-        // 创建保存按钮
-        JButton saveButton = new JButton("保存文件");
-        saveButton.setPreferredSize(new Dimension(100, 30));
-        saveButton.setEnabled(false);
-        buttonPanel.add(saveButton);
-
-        topPanel.add(buttonPanel, BorderLayout.CENTER);
-        panel.add(topPanel, BorderLayout.NORTH);
-
-        // 创建映射面板
-        JPanel mappingConfigPanel = new JPanel(new BorderLayout(10, 10));
-        mappingConfigPanel.setBorder(BorderFactory.createTitledBorder("配置字段映射关系"));
-
-        // 创建表头面板，使用GridLayout布局，分为三列：源表头、映射关系、模板表头
-        JPanel headerPanel = new JPanel(new GridLayout(1, 3, 10, 0));
-
-        // 创建源表头列表
-        JPanel sourcePanel = new JPanel(new BorderLayout());
-        sourcePanel.setBorder(BorderFactory.createTitledBorder("源表表头"));
         sourceListModel = new DefaultListModel<>();
-        sourceList = new JList<>(sourceListModel);
-        sourceList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        sourcePanel.add(new JScrollPane(sourceList), BorderLayout.CENTER);
-
-        // 创建模板表头列表
-        JPanel templatePanel = new JPanel(new BorderLayout());
-        templatePanel.setBorder(BorderFactory.createTitledBorder("模板表头"));
         templateListModel = new DefaultListModel<>();
-        templateList = new JList<>(templateListModel);
-        templateList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        templatePanel.add(new JScrollPane(templateList), BorderLayout.CENTER);
-
-        // 创建映射关系面板
-        JPanel mappingListPanel = new JPanel(new BorderLayout(5, 5));
-        mappingListPanel.setBorder(BorderFactory.createTitledBorder("已配置的映射关系"));
-
-        // 初始化Excel处理器的映射列表模型和列表
         processorMappingListModel = new DefaultListModel<>();
-        processorMappingList = new JList<>(processorMappingListModel);
-        processorMappingList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        processorMappingList.setVisibleRowCount(10);
-        processorMappingList.setFixedCellHeight(25);
+        sourceList = Workbench.fieldList(sourceListModel, "源表字段", "源表没有可用的字段");
+        sourceList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        templateList = Workbench.fieldList(templateListModel, "模板字段", "模板没有可用的字段");
+        processorMappingList = Workbench.fieldList(processorMappingListModel, "已配置的映射", "尚未添加映射");
 
-        // 创建滚动面板并设置首选大小
-        JScrollPane mappingScrollPane = new JScrollPane(processorMappingList);
-        mappingScrollPane.setPreferredSize(new Dimension(200, 250));
-        mappingListPanel.add(mappingScrollPane, BorderLayout.CENTER);
+        JLabel sourceFile = new JLabel();
+        JLabel templateFile = new JLabel();
+        JPanel source = Workbench.listSection("源表字段", sourceList);
+        JPanel template = Workbench.listSection("模板字段", templateList);
+        JPanel mappings = Workbench.listSection("已配置的映射", processorMappingList);
+        source.add(sourceFile, BorderLayout.SOUTH);
+        template.add(templateFile, BorderLayout.SOUTH);
+        JPanel fields = new JPanel(new GridLayout(1, 3, scale(12), 0));
+        fields.setOpaque(false);
+        fields.add(source);
+        fields.add(template);
+        fields.add(mappings);
+        editor.add(fields);
 
-        // 创建映射操作按钮面板
-        JPanel mappingButtonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 5));
-        JButton addMappingButton = new JButton("添加映射");
-        addMappingButton.setPreferredSize(new Dimension(100, 30));
-        JButton removeMappingButton = new JButton("删除映射");
-        removeMappingButton.setPreferredSize(new Dimension(100, 30));
-        mappingButtonPanel.add(addMappingButton);
-        mappingButtonPanel.add(removeMappingButton);
-        mappingListPanel.add(mappingButtonPanel, BorderLayout.SOUTH);
+        JButton add = Workbench.primaryButton("添加映射");
+        JButton remove = new JButton("删除映射");
+        add.setEnabled(false);
+        remove.setEnabled(false);
+        javax.swing.event.ListSelectionListener selectionChanged = e ->
+                add.setEnabled(!sourceList.isSelectionEmpty() && !templateList.isSelectionEmpty());
+        sourceList.addListSelectionListener(selectionChanged);
+        templateList.addListSelectionListener(selectionChanged);
+        processorMappingList.addListSelectionListener(e -> remove.setEnabled(!processorMappingList.isSelectionEmpty()));
+        JPanel controls = new JPanel(new BorderLayout(scale(8), 0));
+        controls.setOpaque(false);
+        controls.add(new JLabel("按住 Ctrl 可多选源字段，再选一个模板字段。"));
+        controls.add(Workbench.actions(add, remove), BorderLayout.LINE_END);
+        editor.add(controls, BorderLayout.SOUTH);
+        cards.add(editor, "editor");
 
-        // 设置映射列表面板的首选大小
-        mappingListPanel.setPreferredSize(new Dimension(250, 300));
-
-        // 添加组件到表头面板
-        headerPanel.add(sourcePanel);
-        headerPanel.add(mappingListPanel);
-        headerPanel.add(templatePanel);
-
-        // 添加组件到映射面板
-        mappingConfigPanel.add(headerPanel, BorderLayout.CENTER);
-
-        // 添加组件到主面板
-        panel.add(mappingConfigPanel, BorderLayout.CENTER);
-
-        // 添加事件处理
-        addProcessorPanelEventHandlers(selectFilesButton, saveButton, addMappingButton, removeMappingButton, reloadFilesButton);
-
-        // 初始化Excel处理器的映射数据结构
-        processorMappings = new HashMap<>();
-        processorMappingOrder = new ArrayList<>();
-
-        log("初始化映射面板完成");
-        return panel;
+        start.addActionListener(e -> select.doClick(0));
+        addProcessorPanelEventHandlers(select, save, add, remove, reload, () -> {
+            sourceFile.setText(new File(inputFilePath).getName());
+            sourceFile.setToolTipText(inputFilePath);
+            templateFile.setText(new File(templateFilePath).getName());
+            templateFile.setToolTipText(templateFilePath);
+            view.show(cards, "editor");
+            sourceList.requestFocusInWindow();
+        });
+        return cards;
     }
 
     private JPanel createMappingPanel() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        JButton upload = Workbench.primaryButton("选择关系表");
+        JButton save = new JButton("保存映射关系");
+        JButton reset = new JButton("重置映射关系");
+        JList<String> source = Workbench.fieldList(new DefaultListModel<>(), "源字段", "选择关系表后显示字段");
+        JList<String> target = Workbench.fieldList(new DefaultListModel<>(), "目标字段", "选择关系表后显示字段");
+        mappingList = Workbench.fieldList(new DefaultListModel<>(), "已保存的映射关系", "尚未保存映射");
 
-        // 创建按钮面板，使用GridLayout使三个按钮各占一半宽度
-        JPanel buttonPanel = new JPanel(new GridLayout(1, 3, 10, 0));
-
-        // 创建上传按钮
-        JButton uploadButton = new JButton("上传关系表");
-        uploadButton.setPreferredSize(new Dimension(100, 30));
-        buttonPanel.add(uploadButton);
-
-        // 创建保存按钮
-        JButton saveButton = new JButton("保存映射关系");
-        saveButton.setPreferredSize(new Dimension(100, 30));
-        buttonPanel.add(saveButton);
-
-        // 新增重置按钮
-        JButton resetButton = new JButton("重置映射关系");
-        resetButton.setPreferredSize(new Dimension(120, 30));
-        buttonPanel.add(resetButton);
-
-        panel.add(buttonPanel, BorderLayout.NORTH);
-
-        // 创建表头选择面板
-        JPanel headerPanel = new JPanel(new GridLayout(2, 2, 10, 10));
-        headerPanel.setBorder(BorderFactory.createTitledBorder("选择映射字段"));
-
-        // 源字段选择
-        JPanel sourcePanel = new JPanel(new BorderLayout(5, 5));
-        sourcePanel.setBorder(BorderFactory.createTitledBorder("源字段"));
-        JList<String> sourceList = new JList<>(new DefaultListModel<>());
-        sourceList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        JScrollPane sourceScrollPane = new JScrollPane(sourceList);
-        sourcePanel.add(sourceScrollPane, BorderLayout.CENTER);
-
-        // 目标字段选择
-        JPanel targetPanel = new JPanel(new BorderLayout(5, 5));
-        targetPanel.setBorder(BorderFactory.createTitledBorder("目标字段"));
-        JList<String> targetList = new JList<>(new DefaultListModel<>());
-        targetList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        JScrollPane targetScrollPane = new JScrollPane(targetList);
-        targetPanel.add(targetScrollPane, BorderLayout.CENTER);
-
-        headerPanel.add(sourcePanel);
-        headerPanel.add(targetPanel);
-
-        // 创建映射关系列表（可伸缩）
-        mappingList = new JList<>();
-        JScrollPane mappingScrollPane = new JScrollPane(mappingList);
-        mappingScrollPane.setBorder(BorderFactory.createTitledBorder("已保存的映射关系"));
-
-        // 创建可伸缩面板
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, headerPanel, mappingScrollPane);
-        splitPane.setDividerLocation(500);
-        splitPane.setDividerSize(5);
-        splitPane.setOneTouchExpandable(true);
-
-        panel.add(splitPane, BorderLayout.CENTER);
-
-        // 添加事件处理
-        addMappingPanelEventHandlers(uploadButton, saveButton, sourceList, targetList);
-
-        // 新增重置按钮事件
-        resetButton.addActionListener(e -> {
+        JPanel columns = new JPanel(new GridLayout(1, 2, scale(12), 0));
+        columns.setOpaque(false);
+        columns.add(Workbench.listSection("源字段", source));
+        columns.add(Workbench.listSection("目标字段", target));
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, columns,
+                Workbench.listSection("已保存的映射关系", mappingList));
+        split.setBorder(BorderFactory.createEmptyBorder());
+        split.setBackground(tabbedPane.getBackground());
+        split.setResizeWeight(0.65);
+        split.setDividerLocation(scale(550));
+        split.setOneTouchExpandable(true);
+        JPanel panel = new JPanel(new BorderLayout(0, scale(14)));
+        panel.setOpaque(false);
+        panel.add(Workbench.actions(upload, save, reset), BorderLayout.NORTH);
+        panel.add(split);
+        addMappingPanelEventHandlers(upload, save, source, target);
+        reset.addActionListener(e -> {
             mappingRelations.clear();
             mappingList.setModel(new DefaultListModel<>());
             statusLabel.setText("已重置映射关系");
             log("已重置所有已保存的映射关系");
         });
-
         return panel;
     }
 
     private JPanel createApplyPanel() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-        // 创建按钮面板，使用GridLayout使两个按钮各占一半宽度
-        JPanel buttonPanel = new JPanel(new GridLayout(1, 2, 10, 0));
-
-        // 创建上传按钮
-        JButton uploadButton = new JButton("上传目标表");
-        uploadButton.setPreferredSize(new Dimension(100, 30));
-        buttonPanel.add(uploadButton);
-
-        // 创建应用按钮
-        JButton applyButton = new JButton("应用映射");
-        applyButton.setPreferredSize(new Dimension(100, 30));
-        buttonPanel.add(applyButton);
-
-        panel.add(buttonPanel, BorderLayout.NORTH);
-
-        // 创建表头选择面板
-        JPanel headerPanel = new JPanel(new GridLayout(2, 2, 10, 10));
-        headerPanel.setBorder(BorderFactory.createTitledBorder("选择映射字段"));
-
-        // 查找字段选择（用于查找映射关系的字段）
-        JPanel lookupPanel = new JPanel(new BorderLayout(5, 5));
-        lookupPanel.setBorder(BorderFactory.createTitledBorder("查找字段（如：用户姓名）"));
-        JList<String> lookupList = new JList<>(new DefaultListModel<>());
-        lookupList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        JScrollPane lookupScrollPane = new JScrollPane(lookupList);
-        lookupPanel.add(lookupScrollPane, BorderLayout.CENTER);
-
-        // 填充字段选择（用于填充映射值的字段）
-        JPanel fillPanel = new JPanel(new BorderLayout(5, 5));
-        fillPanel.setBorder(BorderFactory.createTitledBorder("填充字段（如：用户编号）"));
-        JList<String> fillList = new JList<>(new DefaultListModel<>());
-        fillList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        JScrollPane fillScrollPane = new JScrollPane(fillList);
-        fillPanel.add(fillScrollPane, BorderLayout.CENTER);
-
-        headerPanel.add(lookupPanel);
-        headerPanel.add(fillPanel);
-
-        panel.add(headerPanel, BorderLayout.CENTER);
-
-        // 添加事件处理
-        addApplyPanelEventHandlers(uploadButton, applyButton, lookupList, fillList);
-
+        JButton upload = Workbench.primaryButton("选择目标表");
+        JButton apply = new JButton("应用映射");
+        JList<String> lookup = Workbench.fieldList(new DefaultListModel<>(), "查找字段", "选择目标表后显示字段");
+        JList<String> fill = Workbench.fieldList(new DefaultListModel<>(), "填充字段", "选择目标表后显示字段");
+        JPanel fields = new JPanel(new GridLayout(1, 2, scale(12), 0));
+        fields.setOpaque(false);
+        fields.add(Workbench.listSection("查找字段", lookup));
+        fields.add(Workbench.listSection("填充字段", fill));
+        JPanel panel = new JPanel(new BorderLayout(0, scale(14)));
+        panel.setOpaque(false);
+        panel.add(Workbench.actions(upload, apply), BorderLayout.NORTH);
+        panel.add(fields);
+        addApplyPanelEventHandlers(upload, apply, lookup, fill);
         return panel;
     }
 
@@ -377,95 +271,39 @@ public class ExcelTools {
         });
     }
 
+    private void chooseProcessorFiles(Runnable onFilesLoaded) {
+        try {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setFileFilter(new FileNameExtensionFilter("Excel 文件", "xlsx", "xls"));
+            chooser.setDialogTitle("选择源数据文件");
+            if (chooser.showOpenDialog(mainFrame) != JFileChooser.APPROVE_OPTION) {
+                return;
+            }
+            File sourceFile = chooser.getSelectedFile();
+            chooser.setDialogTitle("选择模板文件");
+            if (chooser.showOpenDialog(mainFrame) == JFileChooser.APPROVE_OPTION) {
+                loadHeaders(sourceFile, chooser.getSelectedFile(), onFilesLoaded);
+            }
+        } catch (RuntimeException ex) {
+            logger.error("选择文件时发生错误", ex);
+            log("选择文件失败：" + ex.getMessage());
+            JOptionPane.showMessageDialog(mainFrame, "选择文件失败：" + ex.getMessage(),
+                    ERROR_TITLE, JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
     private void addProcessorPanelEventHandlers(JButton selectFilesButton, JButton saveButton,
                                                 JButton addMappingButton, JButton removeMappingButton,
-                                                JButton reloadFilesButton) {
-        // 添加选择文件按钮事件
-        selectFilesButton.addActionListener(e -> {
-            try {
-                // 创建文件选择器
-                JFileChooser fileChooser = new JFileChooser();
-                fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-                fileChooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-
-                // 第一步：选择源数据文件
-                fileChooser.setDialogTitle("选择源数据文件");
-                int result = fileChooser.showOpenDialog(mainFrame);
-                if (result != JFileChooser.APPROVE_OPTION) {
-                    return;
-                }
-                inputFilePath = fileChooser.getSelectedFile().getAbsolutePath();
-                log("已选择源数据文件: " + inputFilePath);
-
-                // 第二步：选择模板文件
-                fileChooser.setDialogTitle("选择模板文件");
-                result = fileChooser.showOpenDialog(mainFrame);
-                if (result != JFileChooser.APPROVE_OPTION) {
-                    return;
-                }
-                templateFilePath = fileChooser.getSelectedFile().getAbsolutePath();
-                log("已选择模板文件: " + templateFilePath);
-
-                // 加载表头
-                loadHeaders(inputFilePath, templateFilePath);
-
-            } catch (Exception ex) {
-                logger.error("选择文件时发生错误", ex);
-                log("选择文件失败: " + ex.getMessage());
-                JOptionPane.showMessageDialog(mainFrame,
-                        "选择文件失败: " + ex.getMessage(),
-                        "错误",
-                        JOptionPane.ERROR_MESSAGE);
-            }
-        });
-
-        // 添加重新导入文件按钮事件
-        reloadFilesButton.addActionListener(e -> {
-            try {
-                // 重新选择文件
-                JFileChooser fileChooser = new JFileChooser();
-                fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-                fileChooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-
-                // 选择源数据文件
-                fileChooser.setDialogTitle("选择源数据文件");
-                int result = fileChooser.showOpenDialog(mainFrame);
-                if (result != JFileChooser.APPROVE_OPTION) {
-                    return;
-                }
-                inputFilePath = fileChooser.getSelectedFile().getAbsolutePath();
-                log("已重新选择源数据文件: " + inputFilePath);
-
-                // 选择模板文件
-                fileChooser.setDialogTitle("选择模板文件");
-                result = fileChooser.showOpenDialog(mainFrame);
-                if (result != JFileChooser.APPROVE_OPTION) {
-                    return;
-                }
-                templateFilePath = fileChooser.getSelectedFile().getAbsolutePath();
-                log("已重新选择模板文件: " + templateFilePath);
-
-                // 加载表头
-                loadHeaders(inputFilePath, templateFilePath);
-
-                // 清空映射关系
-                processorMappings.clear();
-                processorMappingOrder.clear();
-                updateProcessorMappingList();
-
-                // 禁用保存按钮
-                saveButton.setEnabled(false);
-
-                statusLabel.setText("已重新导入文件，请重新配置映射关系");
-            } catch (Exception ex) {
-                logger.error("重新导入文件时发生错误", ex);
-                log("重新导入文件失败: " + ex.getMessage());
-                JOptionPane.showMessageDialog(mainFrame,
-                        "重新导入文件失败: " + ex.getMessage(),
-                        "错误",
-                        JOptionPane.ERROR_MESSAGE);
-            }
-        });
+                                                JButton reloadFilesButton, Runnable onFilesLoaded) {
+        selectFilesButton.addActionListener(e -> chooseProcessorFiles(onFilesLoaded));
+        reloadFilesButton.addActionListener(e -> chooseProcessorFiles(() -> {
+            processorMappings.clear();
+            processorMappingOrder.clear();
+            processorMappingListModel.clear();
+            saveButton.setEnabled(false);
+            statusLabel.setText("已重新导入文件，请重新配置映射关系");
+            onFilesLoaded.run();
+        }));
 
         // 添加映射按钮事件
         addMappingButton.addActionListener(e -> {
@@ -624,92 +462,57 @@ public class ExcelTools {
         });
     }
 
-    private void loadHeaders(String inputFilePath, String templateFilePath) {
-        // 创建进度对话框
-        JDialog progressDialog = new JDialog(mainFrame, "加载表头", true);
-        progressDialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        progressDialog.setResizable(false);
-        progressDialog.setUndecorated(false);
-
-        JPanel progressPanel = new JPanel(new BorderLayout(10, 10));
-        progressPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-        JLabel progressLabel = new JLabel("正在加载表头...");
-        JProgressBar progressBar = new JProgressBar();
-        progressBar.setIndeterminate(true);
-
-        progressPanel.add(progressLabel, BorderLayout.NORTH);
-        progressPanel.add(progressBar, BorderLayout.CENTER);
-
-        progressDialog.add(progressPanel);
-        progressDialog.pack();
-        progressDialog.setLocationRelativeTo(mainFrame);
-
-        // 在后台线程中加载表头
+    private void loadHeaders(File sourceFile, File templateFile, Runnable onFilesLoaded) {
+        ProgressDialog progress = ProgressDialog.create(mainFrame, "加载表头");
+        progress.label.setText("正在读取源表表头…");
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+            private List<String> sourceHeaders;
+            private List<String> templateHeaders;
+
             @Override
-            protected Void doInBackground() throws Exception {
-                try {
-                    // 加载源数据文件表头
-                    SwingUtilities.invokeLater(() -> {
-                        progressLabel.setText("正在加载源数据文件表头...");
-                    });
-
-                    List<String> sourceHeaders = ExcelUtils.readNamedHeaders(new File(inputFilePath));
-
-                    // 更新源数据表头列表
-                    SwingUtilities.invokeLater(() -> {
-                        sourceListModel.clear();
-                        for (String header : sourceHeaders) {
-                            sourceListModel.addElement(header);
-                        }
-                        sourceList.repaint();
-                    });
-
-                    // 加载模板文件表头
-                    SwingUtilities.invokeLater(() -> {
-                        progressLabel.setText("正在加载模板文件表头...");
-                    });
-
-                    List<String> templateHeaders = ExcelUtils.readNamedHeaders(new File(templateFilePath));
-
-                    // 更新模板表头列表
-                    SwingUtilities.invokeLater(() -> {
-                        templateListModel.clear();
-                        for (String header : templateHeaders) {
-                            templateListModel.addElement(header);
-                        }
-                        templateList.repaint();
-
-                        // 更新状态
-                        statusLabel.setText("已加载表头，请配置映射关系");
-                        log("成功加载表头");
-                    });
-
-                } catch (Exception e) {
-                    throw new IOException("加载表头失败: " + e.getMessage(), e);
-                }
+            protected Void doInBackground() throws IOException {
+                sourceHeaders = ExcelUtils.readNamedHeaders(sourceFile);
+                SwingUtilities.invokeLater(() -> progress.label.setText("正在读取模板表头…"));
+                templateHeaders = ExcelUtils.readNamedHeaders(templateFile);
                 return null;
             }
 
             @Override
             protected void done() {
-                progressDialog.dispose();
+                progress.dialog.dispose();
+                if (isCancelled()) {
+                    return;
+                }
+                try {
+                    get();
+                } catch (Exception ex) {
+                    Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                    logger.error("加载表头失败", cause);
+                    log("加载表头失败：" + cause.getMessage());
+                    JOptionPane.showMessageDialog(mainFrame, "加载表头失败：" + cause.getMessage(),
+                            ERROR_TITLE, JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+                inputFilePath = sourceFile.getAbsolutePath();
+                templateFilePath = templateFile.getAbsolutePath();
+                sourceListModel.clear();
+                sourceHeaders.forEach(sourceListModel::addElement);
+                templateListModel.clear();
+                templateHeaders.forEach(templateListModel::addElement);
+                log("已加载源数据文件：" + inputFilePath);
+                log("已加载模板文件：" + templateFilePath);
+                statusLabel.setText("已加载表头，请配置映射关系");
+                onFilesLoaded.run();
             }
         };
-
+        progress.dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent event) {
+                worker.cancel(true);
+            }
+        });
         worker.execute();
-        progressDialog.setVisible(true);
-
-        try {
-            worker.get();
-        } catch (Exception e) {
-            logger.error("加载表头时发生错误", e);
-            JOptionPane.showMessageDialog(mainFrame,
-                    "加载表头失败: " + e.getMessage(),
-                    "错误",
-                    JOptionPane.ERROR_MESSAGE);
-        }
+        progress.dialog.setVisible(true);
     }
 
     private void addMappingPanelEventHandlers(JButton uploadButton, JButton saveButton,
@@ -1534,11 +1337,7 @@ public class ExcelTools {
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
-            try {
-                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-            } catch (Exception e) {
-                logger.error("设置外观失败", e);
-            }
+            Workbench.install();
             new ExcelTools();
         });
     }
