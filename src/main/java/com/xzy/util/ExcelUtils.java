@@ -2,14 +2,22 @@ package com.xzy.util;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellReference;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTWorkbook;
 
 import java.io.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Excel工具类：公共方法提取
@@ -64,6 +72,21 @@ public class ExcelUtils {
 
     static String numericText(double value) {
         return value == Math.floor(value) ? String.format(Locale.ROOT, "%.0f", value) : String.valueOf(value);
+    }
+
+    public static String getCheckedCellText(Cell cell) throws FormulaCache.FormulaCacheException {
+        if (cell != null && cell.getCellType() == CellType.FORMULA) {
+            FormulaCache.read(cell);
+        }
+        return getCellValueAsString(cell);
+    }
+
+    public static String getCheckedCellText(File file, Cell cell) throws IOException {
+        try {
+            return getCheckedCellText(cell);
+        } catch (FormulaCache.FormulaCacheException e) {
+            throw e.inFile(file);
+        }
     }
 
     /**
@@ -124,9 +147,62 @@ public class ExcelUtils {
 
     /** 界面按名称选择字段，不把空列当作可选项。 */
     public static List<String> readNamedHeaders(File file) throws IOException {
-        List<String> names = new ArrayList<>(readHeadersOnly(file));
-        names.removeIf(name -> name.trim().isEmpty());
+        return readNamedHeaders(file, Comparator.naturalOrder());
+    }
+
+    public static List<String> readNamedHeaders(File file, Comparator<String> comparison) throws IOException {
+        List<String> headers = readHeadersOnly(file);
+        Map<String, Integer> indices = new TreeMap<>(comparison);
+        List<String> names = new ArrayList<>();
+        for (int column = 0; column < headers.size(); column++) {
+            String name = headers.get(column);
+            if (name.trim().isEmpty() || comparison.compare(name, "") == 0) continue;
+            putUniqueHeader(indices, name, column, file.getAbsolutePath());
+            names.add(name);
+        }
         return names;
+    }
+
+    public static Map<String, Integer> indexNamedHeaders(List<String> headers, String location) throws IOException {
+        Map<String, Integer> indices = new LinkedHashMap<>();
+        for (int column = 0; column < headers.size(); column++) {
+            putUniqueHeader(indices, headers.get(column), column, location);
+        }
+        return indices;
+    }
+
+    /** 调用方按实际匹配规则规范化字段名；保存从零开始的物理列号。 */
+    public static void putUniqueHeader(Map<String, Integer> indices, String key, int column, String location)
+            throws IOException {
+        if (key == null || key.trim().isEmpty()) return;
+        Integer previous = indices.putIfAbsent(key, column);
+        if (previous != null) {
+            throw new IOException(location + "：重复表头“" + key + "”位于 "
+                    + CellReference.convertNumToColString(previous) + " 列和 "
+                    + CellReference.convertNumToColString(column) + " 列，请修改表头后重试。");
+        }
+    }
+
+    public static void markForRecalculation(Workbook workbook) {
+        if (workbook instanceof XSSFWorkbook) {
+            // 保留用户设置的计算模式，让依赖更新值的公式在打开工作簿时刷新。
+            CTWorkbook xml = ((XSSFWorkbook) workbook).getCTWorkbook();
+            (xml.isSetCalcPr() ? xml.getCalcPr() : xml.addNewCalcPr()).setFullCalcOnLoad(true);
+        } else {
+            workbook.setForceFormulaRecalculation(true);
+        }
+    }
+
+    public static void writeFilledWorkbook(Workbook workbook, File destination, OutputStream stream) throws IOException {
+        boolean xlsOutput = destination.getName().toLowerCase(Locale.ROOT).endsWith(".xls");
+        if (xlsOutput && !(workbook instanceof HSSFWorkbook)) {
+            throw new IOException("请将此工作簿保存为 .xlsx，以保留原格式。");
+        }
+        if (workbook instanceof HSSFWorkbook && !xlsOutput) {
+            LegacyWorkbookConverter.writeXlsx((HSSFWorkbook) workbook, stream);
+        } else {
+            workbook.write(stream);
+        }
     }
 
     /** 返回按物理列号排列的表头，空列使用空字符串占位。 */

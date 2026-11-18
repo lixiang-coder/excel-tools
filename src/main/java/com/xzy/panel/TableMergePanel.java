@@ -199,7 +199,18 @@ public class TableMergePanel {
             ctx.log("表格合并完成: " + outputPath);
             JOptionPane.showMessageDialog(mainPanel, "表格合并完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception ex) {
-            String message = rootMessage(ex);
+            Throwable cause = rootCause(ex);
+            if (cause instanceof TableMerger.AmbiguousHeadersException) {
+                Object[] choices = {"无表头合并（保留首行）", "有表头合并（按列名对齐）", "取消"};
+                int choice = JOptionPane.showOptionDialog(mainPanel, cause.getMessage(), "请选择表头处理方式",
+                        JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, choices, choices[0]);
+                if (choice == 0 || choice == 1) {
+                    runMerge(mainPanel, sheetMode, outputPath, choice == 0
+                            ? TableMerger.MergeStrategy.WPS_STYLE_NO_HEADER : TableMerger.MergeStrategy.HEADER_BASED);
+                }
+                return;
+            }
+            String message = cause.getMessage() == null ? cause.toString() : cause.getMessage();
             ctx.log("表格合并失败: " + message);
             JOptionPane.showMessageDialog(mainPanel, "表格合并失败: " + message, "错误", JOptionPane.ERROR_MESSAGE);
         }
@@ -226,14 +237,14 @@ public class TableMergePanel {
         JOptionPane.showMessageDialog(mainPanel, message, "提示", JOptionPane.WARNING_MESSAGE);
     }
 
-    private String rootMessage(Throwable throwable) {
+    private Throwable rootCause(Throwable throwable) {
         Throwable current = throwable;
         // 跳过后台任务包装，保留业务异常提供的源文件及单元格位置。
         while (current.getCause() != null &&
                 (current instanceof ExecutionException || current.getClass() == RuntimeException.class)) {
             current = current.getCause();
         }
-        return current.getMessage() == null ? current.toString() : current.getMessage();
+        return current;
     }
 
     private static class MergeStrategyOption {

@@ -10,6 +10,8 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
+import java.io.IOException;
+import java.util.List;
 
 /**
  * Tab5: 重复列合并工具面板
@@ -64,31 +66,30 @@ public class DuplicateColPanel {
             JFileChooser fc = new JFileChooser();
             fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
             if (fc.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
-                inputPath.setText(fc.getSelectedFile().getAbsolutePath());
+                File input = fc.getSelectedFile();
+                inputPath.setText(input.getAbsolutePath());
                 ctx.log("已选择输入: " + inputPath.getText());
                 ProgressDialog progressDialog = ProgressDialog.create(ctx.getMainFrame(), "加载输入文件表头");
-                SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                    java.util.List<String> headers = null;
+                SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
                     @Override
-                    protected Void doInBackground() {
-                        try { headers = ExcelUtils.readNamedHeaders(new File(inputPath.getText())); }
-                        catch (Exception ex) { headers = null; }
-                        return null;
+                    protected List<String> doInBackground() throws IOException {
+                        return ExcelUtils.readNamedHeaders(input, String.CASE_INSENSITIVE_ORDER);
                     }
                     @Override
                     protected void done() {
                         progressDialog.dialog.dispose();
-                        if (headers != null) {
-                            customerIdCombo.removeAllItems();
-                            mergeColsModel.clear();
-                            for (String h : headers) {
+                        customerIdCombo.removeAllItems();
+                        mergeColsModel.clear();
+                        try {
+                            for (String h : get()) {
                                 customerIdCombo.addItem(h);
                                 mergeColsModel.addElement(h);
                             }
                             if (customerIdCombo.getItemCount() > 0) customerIdCombo.setSelectedIndex(0);
-                        } else {
-                            customerIdCombo.removeAllItems();
-                            mergeColsModel.clear();
+                        } catch (Exception ex) {
+                            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                            ctx.log("加载表头失败：" + cause.getMessage());
+                            JOptionPane.showMessageDialog(mainPanel, cause.getMessage(), "加载表头失败", JOptionPane.ERROR_MESSAGE);
                         }
                     }
                 };

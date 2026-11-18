@@ -179,7 +179,7 @@ public class TableMergerExportTest {
     }
 
     @Test
-    public void validHeaderWithoutDataIsStillASuccessfulInput() throws Exception {
+    public void singleTextRowNeedsAnExplicitHeaderChoice() throws Exception {
         File input = temporary.newFile("header-only.xlsx");
         try (Workbook workbook = new XSSFWorkbook(); FileOutputStream stream = new FileOutputStream(input)) {
             Row header = workbook.createSheet("Sheet1").createRow(0);
@@ -191,6 +191,12 @@ public class TableMergerExportTest {
         originalInputs.put(input, Files.readAllBytes(input.toPath()));
         File output = new File(temporary.getRoot(), "header-only-result.xlsx");
 
+        if (strategy == TableMerger.MergeStrategy.AUTO) {
+            assertThrows(TableMerger.AmbiguousHeadersException.class, () -> merge(output, null));
+            assertFalse(output.exists());
+            assertInputsUnchanged();
+            return;
+        }
         merge(output, null);
 
         try (Workbook workbook = WorkbookFactory.create(output)) {
@@ -205,6 +211,117 @@ public class TableMergerExportTest {
             }
         }
         assertInputsUnchanged();
+    }
+
+    @Test
+    public void textOnlyListsRequireAChoiceAndDoNotCreateFalseSuccessfulRows() throws Exception {
+        setTableData(new String[][] {{"张三", "北京"}, {"李四", "上海"}},
+                new String[][] {{"王五", "深圳"}, {"赵六", "成都"}});
+        File output = temporary.newFile("text-lists.xlsx");
+        Files.write(output.toPath(), OLD_OUTPUT);
+
+        if (strategy == TableMerger.MergeStrategy.AUTO) {
+            IOException failure = assertThrows(TableMerger.AmbiguousHeadersException.class, () -> merge(output, null));
+            assertTrue(failure.getMessage().contains("无表头合并"));
+            assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(output.toPath()));
+        } else {
+            merge(output, null);
+            try (Workbook workbook = WorkbookFactory.create(output)) {
+                if (strategy == TableMerger.MergeStrategy.WPS_STYLE_NO_HEADER) {
+                    Sheet data = workbook.getSheet("总表");
+                    assertEquals(4, data.getPhysicalNumberOfRows());
+                    String[] names = {"张三", "李四", "王五", "赵六"};
+                    for (int i = 0; i < names.length; i++) {
+                        assertEquals(names[i], data.getRow(i).getCell(1).getStringCellValue());
+                    }
+                } else {
+                    assertEquals(2, workbook.getSheet("合并数据").getPhysicalNumberOfRows());
+                    Sheet report = workbook.getSheet("合并报告");
+                    assertEquals("失败", report.getRow(2).getCell(2).getStringCellValue());
+                    assertEquals(0, report.getRow(2).getCell(4).getNumericCellValue(), 0);
+                    assertTrue(report.getRow(2).getCell(5).getStringCellValue().contains("没有共同列"));
+                    assertEquals("成功 1 / 失败 1", report.getRow(3).getCell(2).getStringCellValue());
+                }
+            }
+        }
+        assertInputsUnchanged();
+    }
+
+    @Test
+    public void identicalFirstRecordsAreInsufficientEvidenceOfHeaders() throws Exception {
+        File output = temporary.newFile("identical-first-rows.xlsx");
+        for (Object firstValue : new Object[] {"张三", 7}) {
+            setTableData(new Object[][] {{firstValue, "北京"}, {"李四", "上海"}},
+                    new Object[][] {{firstValue, "北京"}, {"赵六", "成都"}});
+            Files.write(output.toPath(), OLD_OUTPUT);
+            if (strategy == TableMerger.MergeStrategy.AUTO && firstValue instanceof String) {
+                assertThrows(TableMerger.AmbiguousHeadersException.class, () -> merge(output, null));
+                assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(output.toPath()));
+            } else {
+                merge(output, null);
+                try (Workbook workbook = WorkbookFactory.create(output)) {
+                    if (strategy == TableMerger.MergeStrategy.HEADER_BASED) {
+                        assertEquals(3, workbook.getSheet("合并数据").getPhysicalNumberOfRows());
+                    } else {
+                        Sheet data = workbook.getSheet("总表");
+                        assertEquals(4, data.getPhysicalNumberOfRows());
+                        assertEquals("北京", data.getRow(0).getCell(2).getStringCellValue());
+                        assertEquals("北京", data.getRow(2).getCell(2).getStringCellValue());
+                    }
+                }
+            }
+            assertInputsUnchanged();
+        }
+    }
+
+    @Test
+    public void duplicateNormalizedHeadersInALaterTableProtectTheWholeExport() throws Exception {
+        setTableData(new Object[][] {{"ID", "Amount"}, {1, "10"}},
+                new Object[][] {{"ID", "Amount", "A mount"}, {2, "20", "30"}});
+        File output = temporary.newFile("duplicate-headers.xlsx");
+        Files.write(output.toPath(), OLD_OUTPUT);
+
+        if (strategy == TableMerger.MergeStrategy.WPS_STYLE_NO_HEADER) {
+            merge(output, null);
+            try (Workbook workbook = WorkbookFactory.create(output)) {
+                Row row = workbook.getSheet("总表").getRow(3);
+                assertEquals("20", row.getCell(2).getStringCellValue());
+                assertEquals("30", row.getCell(3).getStringCellValue());
+            }
+        } else {
+            IOException failure = assertThrows(IOException.class, () -> merge(output, null));
+            String message = failure.getMessage();
+            assertTrue(message, message.contains("重复表头") && message.contains("amount"));
+            assertTrue(message, message.contains("B 列") && message.contains("C 列"));
+            assertTrue(message, message.contains("Table2"));
+            assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(output.toPath()));
+        }
+        assertInputsUnchanged();
+    }
+
+    private void setTableData(Object[][]... tables) throws IOException {
+        for (int fileIndex = 0; fileIndex < inputs.size(); fileIndex++) {
+            File input = inputs.get(fileIndex);
+            try (Workbook workbook = new XSSFWorkbook(); FileOutputStream out = new FileOutputStream(input)) {
+                int sheetCount = multipleFiles ? 1 : tables.length;
+                for (int sheetIndex = 0; sheetIndex < sheetCount; sheetIndex++) {
+                    int index = multipleFiles ? fileIndex : sheetIndex;
+                    Sheet sheet = workbook.createSheet("Table" + (index + 1));
+                    for (Object[] values : tables[index]) {
+                        Row row = sheet.createRow(sheet.getPhysicalNumberOfRows());
+                        for (int c = 0; c < values.length; c++) {
+                            if (values[c] instanceof Number) {
+                                row.createCell(c).setCellValue(((Number) values[c]).doubleValue());
+                            } else {
+                                row.createCell(c).setCellValue((String) values[c]);
+                            }
+                        }
+                    }
+                }
+                workbook.write(out);
+            }
+            originalInputs.put(input, Files.readAllBytes(input.toPath()));
+        }
     }
 
     private void assertMidwayFailure(File output) {

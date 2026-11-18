@@ -6,8 +6,11 @@ import com.formdev.flatlaf.ui.FlatEmptyBorder;
 import com.formdev.flatlaf.ui.FlatLineBorder;
 
 import javax.swing.*;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.plaf.FontUIResource;
 import java.awt.*;
+import java.io.File;
+import java.util.Locale;
 
 import static com.formdev.flatlaf.util.UIScale.scale;
 
@@ -17,6 +20,24 @@ public final class Workbench {
     private static final Color MUTED = new Color(0x53695F);
 
     private Workbench() {
+    }
+
+    public static File chooseFilledWorkbook(Component parent, File target, String title) {
+        File directory = target.getAbsoluteFile().getParentFile();
+        String name = target.getName();
+        boolean legacy = name.toLowerCase(Locale.ROOT).endsWith(".xls");
+        String extension = legacy ? ".xls" : ".xlsx";
+        int dot = name.lastIndexOf('.');
+        JFileChooser chooser = new JFileChooser(directory);
+        chooser.setAcceptAllFileFilterUsed(false);
+        chooser.setFileFilter(legacy ? new FileNameExtensionFilter("Excel 工作簿 (*.xls, *.xlsx)", "xls", "xlsx")
+                : new FileNameExtensionFilter("Excel 工作簿 (*.xlsx)", "xlsx"));
+        chooser.setSelectedFile(new File(directory, (dot > 0 ? name.substring(0, dot) : name) + "-已填充" + extension));
+        chooser.setDialogTitle(title);
+        if (chooser.showSaveDialog(parent) != JFileChooser.APPROVE_OPTION) return null;
+        File chosen = chooser.getSelectedFile();
+        String suffix = chosen.getName().toLowerCase(Locale.ROOT);
+        return suffix.endsWith(".xls") || suffix.endsWith(".xlsx") ? chosen : new File(chosen.getPath() + extension);
     }
 
     public static void install() {

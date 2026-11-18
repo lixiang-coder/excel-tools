@@ -1,11 +1,12 @@
 package com.xzy;
 
+import com.xzy.ui.Workbench;
 import com.xzy.util.ExcelUtils;
 import com.xzy.util.SafeExport;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.util.IOUtils;
 
 import javax.swing.*;
@@ -43,95 +44,100 @@ public class CrossSheetFiller {
         if (!aFile.exists() || !aFile.canRead()) throw new IOException("无法读取源表: " + aPath);
         if (!bFile.exists() || !bFile.canRead()) throw new IOException("无法读取目标表: " + bPath);
         try (SafeExport export = SafeExport.begin(outFile, aFile, bFile)) {
-            try (FileInputStream aFis = new FileInputStream(aFile);
-                 FileInputStream bFis = new FileInputStream(bFile);
-                 Workbook aWb = WorkbookFactory.create(aFis);
-                 Workbook bWb = WorkbookFactory.create(bFis);
-                 Workbook outWb = new SXSSFWorkbook(100);
-                 FileOutputStream fos = new FileOutputStream(export.temporaryFile())) {
-                Sheet aSheet = aWb.getSheetAt(0);
-                Sheet bSheet = bWb.getSheetAt(0);
-                if (aSheet == null || bSheet == null) throw new IOException("源表或目标表无数据");
-                Row aHeaderRow = aSheet.getRow(0);
-                Row bHeaderRow = bSheet.getRow(0);
-                if (aHeaderRow == null || bHeaderRow == null) throw new IOException("源表或目标表无表头");
-                // ---增强容错：建立表头容错Map---
-                Map<String, Integer> aHeaderMap = new HashMap<>();
-                for (int i = 0; i < aHeaderRow.getLastCellNum(); i++) {
-                    String h = ExcelUtils.getCellValueAsString(aHeaderRow.getCell(i));
-                    if (h != null) aHeaderMap.put(ExcelUtils.cleanString(h).toLowerCase(), i);
-                }
-                Map<String, Integer> bHeaderMap = new HashMap<>();
-                for (int i = 0; i < bHeaderRow.getLastCellNum(); i++) {
-                    String h = ExcelUtils.getCellValueAsString(bHeaderRow.getCell(i));
-                    if (h != null) bHeaderMap.put(ExcelUtils.cleanString(h).toLowerCase(), i);
-                }
-                int aKeyIdx = aHeaderMap.getOrDefault(ExcelUtils.cleanString(aKeyHeader).toLowerCase(), -1);
-                int aValIdx = aHeaderMap.getOrDefault(ExcelUtils.cleanString(aValueHeader).toLowerCase(), -1);
-                int bKeyIdx = bHeaderMap.getOrDefault(ExcelUtils.cleanString(bKeyHeader).toLowerCase(), -1);
-                int bValIdx = bHeaderMap.getOrDefault(ExcelUtils.cleanString(bValueHeader).toLowerCase(), -1);
-                // ---友好报错---
-                if (aKeyIdx == -1)
-                    throw new IOException("源表未找到主键表头: " + aKeyHeader + "（已自动忽略空格和大小写）");
-                if (aValIdx == -1)
-                    throw new IOException("源表未找到数据表头: " + aValueHeader + "（已自动忽略空格和大小写）");
-                if (bKeyIdx == -1)
-                    throw new IOException("目标表未找到主键表头: " + bKeyHeader + "（已自动忽略空格和大小写）");
-                if (bValIdx == -1)
-                    throw new IOException("目标表未找到目标表头: " + bValueHeader + "（已自动忽略空格和大小写）");
-                // 先聚合源表数据，避免目标表写入 SXSSF 后再回读已刷盘的行。
-                // StringBuilder 保留源表顺序和重复值，符合“保留原值并累加、不去重”的规则。
-                Map<String, StringBuilder> aKeyToValues = new HashMap<>();
-                int total = aSheet.getLastRowNum();
-                int cur = 0;
-                for (int i = 1; i <= total; i++) {
-                    cur++;
-                    Row aRow = aSheet.getRow(i);
-                    if (aRow == null) continue;
-                    String aKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(aRow.getCell(aKeyIdx)));
-                    String aVal = ExcelUtils.getCellValueAsString(aRow.getCell(aValIdx));
-                    if (aKey != null && !aKey.isEmpty() && aVal != null && !aVal.isEmpty()) {
-                        StringBuilder values = aKeyToValues.computeIfAbsent(aKey, k -> new StringBuilder());
-                        if (values.length() > 0) values.append(VALUE_SEPARATOR);
-                        values.append(aVal);
+            Map<String, StringBuilder> valuesByKey = new HashMap<>();
+            try (FileInputStream input = new FileInputStream(aFile);
+                 Workbook source = WorkbookFactory.create(input)) {
+                Sheet sheet = firstSheet(source, aFile);
+                Map<String, Integer> headers = headerIndices(aFile, sheet);
+                int keyColumn = requireColumn(headers, aKeyHeader, "源表主键");
+                int valueColumn = requireColumn(headers, aValueHeader, "源表数据");
+                int total = sheet.getLastRowNum();
+                for (Row row : sheet) {
+                    int index = row.getRowNum();
+                    if (index == 0) continue;
+                    String key = ExcelUtils.cleanString(ExcelUtils.getCheckedCellText(aFile, row.getCell(keyColumn)));
+                    if (!key.isEmpty()) {
+                        String value = ExcelUtils.getCheckedCellText(aFile, row.getCell(valueColumn));
+                        if (!value.isEmpty()) {
+                            StringBuilder values = valuesByKey.computeIfAbsent(key, k -> new StringBuilder());
+                            if (values.length() > 0) values.append(VALUE_SEPARATOR);
+                            values.append(value);
+                        }
                     }
-                    if (progressListener != null && (cur % 100 == 0 || cur == total)) {
-                        progressListener.onProgress(cur, total);
+                    if (progressListener != null && (index % 100 == 0 || index == total)) {
+                        progressListener.onProgress(index, total);
                     }
                 }
-
-                // 目标表只按原始顺序读取一次并立即写出当前行，确保 SXSSF 不会尝试重写已刷盘的行。
-                Sheet outSheet = outWb.createSheet("Sheet1");
-                for (int i = 0; i <= bSheet.getLastRowNum(); i++) {
-                    Row src = bSheet.getRow(i);
-                    Row dst = outSheet.createRow(i);
-                    if (src == null) continue;
-                    for (int j = 0; j < src.getLastCellNum(); j++) {
-                        Cell srcCell = src.getCell(j);
-                        Cell dstCell = dst.createCell(j);
-                        if (srcCell != null) ExcelUtils.copyCellValue(srcCell, dstCell);
+            }
+            try (FileInputStream input = new FileInputStream(bFile);
+                 Workbook target = WorkbookFactory.create(input)) {
+                Sheet sheet = firstSheet(target, bFile);
+                Map<String, Integer> headers = headerIndices(bFile, sheet);
+                int keyColumn = requireColumn(headers, bKeyHeader, "目标表主键");
+                int valueColumn = requireColumn(headers, bValueHeader, "目标表填充");
+                List<CellRangeAddress> merges = sheet.getMergedRegions();
+                merges.removeIf(region -> valueColumn < region.getFirstColumn() || valueColumn > region.getLastColumn());
+                merges.sort(Comparator.comparingInt(CellRangeAddress::getFirstRow));
+                int mergeIndex = 0;
+                boolean filled = false;
+                for (Row row : sheet) {
+                    int index = row.getRowNum();
+                    if (index == 0) continue;
+                    String key = ExcelUtils.cleanString(ExcelUtils.getCheckedCellText(bFile, row.getCell(keyColumn)));
+                    StringBuilder values = valuesByKey.get(key);
+                    if (values == null) continue;
+                    while (mergeIndex < merges.size() && merges.get(mergeIndex).getLastRow() < index) mergeIndex++;
+                    if (mergeIndex < merges.size()) {
+                        CellRangeAddress region = merges.get(mergeIndex);
+                        if (index >= region.getFirstRow() && (index != region.getFirstRow() || valueColumn != region.getFirstColumn())) {
+                            throw new IOException("工作表“" + sheet.getSheetName() + "”第 " + (index + 1)
+                                    + " 行的填充格位于合并区域 " + region.formatAsString() + " 内，只有左上角可以写入。");
+                        }
                     }
-
-                    if (i == 0) continue;
-                    String bKey = ExcelUtils.cleanString(ExcelUtils.getCellValueAsString(src.getCell(bKeyIdx)));
-                    StringBuilder appendedValues = aKeyToValues.get(bKey);
-                    if (bKey == null || bKey.isEmpty() || appendedValues == null || appendedValues.length() == 0) {
-                        continue;
-                    }
-                    Cell cell = dst.getCell(bValIdx);
-                    if (cell == null) cell = dst.createCell(bValIdx);
-                    String currentVal = ExcelUtils.getCellValueAsString(cell);
-                    String accumulatedVal = currentVal == null || currentVal.isEmpty()
-                            ? appendedValues.toString()
-                            : currentVal + VALUE_SEPARATOR + appendedValues;
-                    cell.setCellValue(accumulatedVal);
-                    System.out.println("填充: 源表主键:" + bKey + " -> 目标表行:" + (dst.getRowNum() + 1) + "，累加值:" + accumulatedVal);
+                    Cell cell = row.getCell(valueColumn, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                    String existing = ExcelUtils.getCheckedCellText(bFile, cell);
+                    cell.setBlank();
+                    cell.setCellValue(existing.isEmpty() ? values.toString() : existing + VALUE_SEPARATOR + values);
+                    filled = true;
                 }
-                outWb.write(fos);
-                ((SXSSFWorkbook) outWb).dispose();
+                if (filled) ExcelUtils.markForRecalculation(target);
+                try (FileOutputStream stream = new FileOutputStream(export.temporaryFile())) {
+                    ExcelUtils.writeFilledWorkbook(target, outFile, stream);
+                }
             }
             export.commit();
         }
+    }
+
+    private static Sheet firstSheet(Workbook workbook, File file) throws IOException {
+        if (workbook.getNumberOfSheets() == 0) throw new IOException(file + " 没有工作表");
+        return workbook.getSheetAt(0);
+    }
+
+    private static Map<String, Integer> headerIndices(File file, Sheet sheet) throws IOException {
+        Row header = sheet.getRow(0);
+        if (header == null) throw new IOException(file + " 的首行没有表头");
+        Map<String, Integer> indices = new HashMap<>();
+        String location = file + " 工作表“" + sheet.getSheetName() + "”";
+        for (Cell cell : header) {
+            String key = normalizeHeader(ExcelUtils.getCheckedCellText(file, cell));
+            if (!key.isEmpty()) ExcelUtils.putUniqueHeader(indices, key, cell.getColumnIndex(), location);
+        }
+        return indices;
+    }
+
+    private static String normalizeHeader(String name) {
+        return name == null ? "" : ExcelUtils.cleanString(name).toLowerCase(Locale.ROOT);
+    }
+
+    public static List<String> readMatchingHeaders(File file) throws IOException {
+        return ExcelUtils.readNamedHeaders(file, Comparator.comparing(CrossSheetFiller::normalizeHeader));
+    }
+
+    private static int requireColumn(Map<String, Integer> indices, String name, String role) throws IOException {
+        Integer column = indices.get(normalizeHeader(name));
+        if (column == null) throw new IOException("未找到" + role + "表头: " + name + "（已忽略空格和大小写）");
+        return column;
     }
 
     // 进度监听接口
@@ -358,7 +364,7 @@ public class CrossSheetFiller {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                java.util.List<String> headers = ExcelUtils.readNamedHeaders(new File(aPath.getText()));
+                                java.util.List<String> headers = readMatchingHeaders(new File(aPath.getText()));
                                 SwingUtilities.invokeLater(() -> {
                                     aHeadersArea.setText(String.join(", ", headers));
                                     aKeyCombo.removeAllItems();
@@ -406,7 +412,7 @@ public class CrossSheetFiller {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                java.util.List<String> headers = ExcelUtils.readNamedHeaders(new File(bPath.getText()));
+                                java.util.List<String> headers = readMatchingHeaders(new File(bPath.getText()));
                                 SwingUtilities.invokeLater(() -> {
                                     bHeadersArea.setText(String.join(", ", headers));
                                     bKeyCombo.removeAllItems();
@@ -443,13 +449,12 @@ public class CrossSheetFiller {
             });
             selOut.addActionListener(e -> {
                 if (!isSelOutEnabled[0]) return;
-                JFileChooser fc = new JFileChooser();
-                fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-                if (fc.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) {
-                    String p = fc.getSelectedFile().getAbsolutePath();
-                    if (!p.toLowerCase().endsWith(".xlsx")) p += ".xlsx";
-                    outPath.setText(p);
+                if (bPath.getText().isEmpty()) {
+                    status.setText("请先选择目标表");
+                    return;
                 }
+                File output = Workbench.chooseFilledWorkbook(frame, new File(bPath.getText()), "保存跨表填充后的工作簿");
+                if (output != null) outPath.setText(output.getAbsolutePath());
             });
             runBtn.addActionListener(e -> {
                 JProgressBar[] progressBarHolder = new JProgressBar[1];

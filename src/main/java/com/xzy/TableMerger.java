@@ -22,10 +22,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Excel表格合并工具。
@@ -42,6 +44,12 @@ public class TableMerger {
         AUTO,
         HEADER_BASED,
         WPS_STYLE_NO_HEADER
+    }
+
+    public static final class AmbiguousHeadersException extends IOException {
+        private AmbiguousHeadersException() {
+            super("无法可靠判断各表是否有表头。请选择“有表头合并”或“无表头合并”。无表头合并会保留首行数据。");
+        }
     }
 
     /**
@@ -64,7 +72,8 @@ public class TableMerger {
                  Workbook inputWorkbook = WorkbookFactory.create(fis);
                  SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
                 try {
-                    MergeStrategy effectiveStrategy = resolveStrategy(strategy, collectSheetSamples(inputWorkbook));
+                    MergeStrategy effectiveStrategy = strategy == null || strategy == MergeStrategy.AUTO
+                            ? detectStrategy(collectSheetSamples(inputWorkbook)) : strategy;
                     logger.info("表格合并策略: {}", effectiveStrategy);
                     if (effectiveStrategy == MergeStrategy.WPS_STYLE_NO_HEADER) {
                         mergeWorkbookSheetsWpsStyle(inputFile, inputWorkbook, outputWorkbook, progressListener);
@@ -106,7 +115,8 @@ public class TableMerger {
         File outputFile = prepareOutputFile(outputFilePath);
 
         try (SafeExport export = SafeExport.begin(outputFile, inputFiles.toArray(new File[0]))) {
-            MergeStrategy effectiveStrategy = resolveStrategy(strategy, collectFileSamples(inputFiles));
+            MergeStrategy effectiveStrategy = strategy == null || strategy == MergeStrategy.AUTO
+                    ? detectStrategy(collectFileSamples(inputFiles)) : strategy;
             logger.info("表格合并策略: {}", effectiveStrategy);
             if (effectiveStrategy == MergeStrategy.WPS_STYLE_NO_HEADER) {
                 mergeFilesWpsStyle(inputFiles, export.temporaryFile(), progressListener);
@@ -160,8 +170,15 @@ public class TableMerger {
             return;
         }
 
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             Workbook workbook = WorkbookFactory.create(fis)) {
+        Workbook source;
+        try {
+            source = WorkbookFactory.create(inputFile, null, true);
+        } catch (Exception e) {
+            logger.warn("读取文件失败: {}", inputFile.getAbsolutePath(), e);
+            writer.addReport(inputFile.getAbsolutePath(), "", "失败", 0, 0, e.getMessage());
+            return;
+        }
+        try (Workbook workbook = source) {
             if (workbook.getNumberOfSheets() == 0) {
                 writer.addReport(inputFile.getAbsolutePath(), "", "失败", 0, 0, "未找到有效表头");
                 return;
@@ -169,14 +186,11 @@ public class TableMerger {
             processHeaderSheet(inputFile.getAbsolutePath(), workbook.getSheetAt(0), writer);
         } catch (FormulaCacheException e) {
             throw e.inFile(inputFile);
-        } catch (Exception e) {
-            logger.warn("处理文件失败: {}", inputFile.getAbsolutePath(), e);
-            writer.addReport(inputFile.getAbsolutePath(), "", "失败", 0, 0, e.getMessage());
         }
     }
 
     private void processHeaderSheet(String sourceFile, Sheet sourceSheet, HeaderMergeWriter writer)
-            throws FormulaCacheException {
+            throws IOException {
         String sheetName = sourceSheet == null ? "" : sourceSheet.getSheetName();
         if (sourceSheet == null) {
             writer.addReport(sourceFile, sheetName, "失败", 0, 0, "未找到有效表头");
@@ -191,7 +205,11 @@ public class TableMerger {
         }
 
         writer.ensureStandardHeaders(headers);
-        SourceMapping mapping = buildSourceMapping(headers, writer.getStandardHeaders());
+        SourceMapping mapping = buildSourceMapping(headers, writer.getStandardHeaders(), sourceFile + " / " + sheetName);
+        if (mapping.targetToSourceIndex.isEmpty()) {
+            writer.addReport(sourceFile, sheetName, "失败", 0, 0, "与标准表头没有共同列");
+            return;
+        }
         int readRows = 0;
         int mergedRows = 0;
         for (int i = 1; i <= sourceSheet.getLastRowNum(); i++) {
@@ -257,27 +275,16 @@ public class TableMerger {
         }
     }
 
-    private MergeStrategy resolveStrategy(MergeStrategy requestedStrategy, List<List<String>> samples) {
-        if (requestedStrategy == null || requestedStrategy == MergeStrategy.AUTO) {
-            return looksLikeHeaderRows(samples) ? MergeStrategy.HEADER_BASED : MergeStrategy.WPS_STYLE_NO_HEADER;
-        }
-        return requestedStrategy;
-    }
-
-    private List<List<String>> collectSheetSamples(Workbook workbook) throws FormulaCacheException {
-        List<List<String>> samples = new ArrayList<>();
-        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
-            Sheet sheet = workbook.getSheetAt(i);
-            List<String> row = firstNonEmptyRowValues(sheet);
-            if (!row.isEmpty()) {
-                samples.add(row);
-            }
+    private List<SheetSample> collectSheetSamples(Workbook workbook) throws FormulaCacheException {
+        List<SheetSample> samples = new ArrayList<>();
+        for (Sheet sheet : workbook) {
+            collectSample(sheet, samples);
         }
         return samples;
     }
 
-    private List<List<String>> collectFileSamples(List<File> inputFiles) throws IOException {
-        List<List<String>> samples = new ArrayList<>();
+    private List<SheetSample> collectFileSamples(List<File> inputFiles) throws IOException {
+        List<SheetSample> samples = new ArrayList<>();
         for (File inputFile : inputFiles) {
             if (inputFile == null || !inputFile.exists() || !inputFile.canRead()) {
                 continue;
@@ -285,10 +292,7 @@ public class TableMerger {
             try (FileInputStream fis = new FileInputStream(inputFile);
                  Workbook workbook = WorkbookFactory.create(fis)) {
                 if (workbook.getNumberOfSheets() > 0) {
-                    List<String> row = firstNonEmptyRowValues(workbook.getSheetAt(0));
-                    if (!row.isEmpty()) {
-                        samples.add(row);
-                    }
+                    collectSample(workbook.getSheetAt(0), samples);
                 }
             } catch (FormulaCacheException e) {
                 throw e.inFile(inputFile);
@@ -299,59 +303,32 @@ public class TableMerger {
         return samples;
     }
 
-    private boolean looksLikeHeaderRows(List<List<String>> samples) {
+    private MergeStrategy detectStrategy(List<SheetSample> samples) throws AmbiguousHeadersException {
         if (samples.isEmpty()) {
-            return true;
+            return MergeStrategy.HEADER_BASED;
         }
-        if (samples.size() == 1) {
-            return rowLooksLikeHeader(samples.get(0));
+        if (samples.stream().allMatch(sample -> sample.startsWithData)) {
+            return MergeStrategy.WPS_STYLE_NO_HEADER;
         }
-
-        List<String> base = normalizedNonEmptyValues(samples.get(0));
-        if (base.isEmpty()) {
-            return false;
+        if (samples.size() == 1 || samples.stream().anyMatch(sample -> sample.startsWithData)
+                || samples.stream().noneMatch(sample -> sample.typedDataBelow)) {
+            throw new AmbiguousHeadersException();
         }
-        double overlapSum = 0;
-        int compared = 0;
+        Set<String> base = samples.get(0).firstValues;
         for (int i = 1; i < samples.size(); i++) {
-            List<String> current = normalizedNonEmptyValues(samples.get(i));
-            if (current.isEmpty()) {
-                continue;
-            }
-            int hits = 0;
-            for (String value : current) {
-                if (base.contains(value)) {
-                    hits++;
-                }
-            }
-            overlapSum += hits * 1.0 / Math.min(base.size(), current.size());
-            compared++;
-        }
-        if (compared > 0 && overlapSum / compared >= 0.6) {
-            return true;
-        }
-        int headerLikeRows = 0;
-        for (List<String> sample : samples) {
-            if (rowLooksLikeHeader(sample)) {
-                headerLikeRows++;
+            Set<String> current = samples.get(i).firstValues;
+            int smallerSize = Math.min(base.size(), current.size());
+            if (current.stream().filter(base::contains).count() < smallerSize * 0.6) {
+                throw new AmbiguousHeadersException();
             }
         }
-        return headerLikeRows >= Math.ceil(samples.size() * 0.8);
+        return MergeStrategy.HEADER_BASED;
     }
 
-    private boolean rowLooksLikeHeader(List<String> row) {
-        int nonEmpty = 0;
-        int dataLike = 0;
-        for (String value : row) {
-            if (value == null || value.trim().isEmpty()) {
-                continue;
-            }
-            nonEmpty++;
-            if (looksLikeDataValue(value)) {
-                dataLike++;
-            }
-        }
-        return nonEmpty > 0 && dataLike == 0;
+    private static class SheetSample {
+        private final Set<String> firstValues = new HashSet<>();
+        private boolean startsWithData;
+        private boolean typedDataBelow;
     }
 
     private boolean looksLikeDataValue(String value) {
@@ -365,32 +342,49 @@ public class TableMerger {
         return text.matches("\\d+(\\.\\d+)?");
     }
 
-    private List<String> firstNonEmptyRowValues(Sheet sheet) throws FormulaCacheException {
-        List<String> values = new ArrayList<>();
-        if (sheet == null) {
-            return values;
-        }
-        for (int i = 0; i <= sheet.getLastRowNum(); i++) {
-            Row row = sheet.getRow(i);
-            if (hasAnyCellValue(row)) {
-                int lastCell = Math.max(row.getLastCellNum(), (short) 0);
-                for (int c = 0; c < lastCell; c++) {
-                    values.add(readMergeCellText(row.getCell(c)));
+    private void collectSample(Sheet sheet, List<SheetSample> samples) throws FormulaCacheException {
+        SheetSample sample = null;
+        for (Row row : sheet) {
+            if (!hasAnyCellValue(row)) continue;
+            if (sample != null) {
+                sample.typedDataBelow = hasTypedData(row);
+                break;
+            }
+            sample = new SheetSample();
+            sample.startsWithData = hasTypedData(row);
+            for (Cell cell : row) {
+                String text = readMergeCellText(cell);
+                String field = normalizeHeader(text);
+                if (!field.isEmpty()) {
+                    sample.firstValues.add(field);
+                    if (looksLikeDataValue(text)) sample.startsWithData = true;
                 }
-                trimTrailingEmptyHeaders(values);
-                return values;
             }
         }
-        return values;
+        if (sample != null && !sample.firstValues.isEmpty()) samples.add(sample);
     }
 
-    private SourceMapping buildSourceMapping(List<String> sourceHeaders, List<String> standardHeaders) {
+    private boolean hasTypedData(Row row) {
+        for (Cell cell : row) {
+            CellType type = cell.getCellType();
+            if (type == CellType.FORMULA) {
+                try {
+                    type = FormulaCache.read(cell).getCellType();
+                } catch (FormulaCacheException e) {
+                    // 缺失缓存无法作为判定依据，实际合并时会检查需要写入的公式。
+                    continue;
+                }
+            }
+            if (type == CellType.NUMERIC || type == CellType.BOOLEAN || type == CellType.ERROR) return true;
+        }
+        return false;
+    }
+
+    private SourceMapping buildSourceMapping(List<String> sourceHeaders, List<String> standardHeaders,
+                                             String location) throws IOException {
         Map<String, Integer> sourceIndex = new HashMap<>();
         for (int i = 0; i < sourceHeaders.size(); i++) {
-            String normalized = normalizeHeader(sourceHeaders.get(i));
-            if (!normalized.isEmpty() && !sourceIndex.containsKey(normalized)) {
-                sourceIndex.put(normalized, i);
-            }
+            ExcelUtils.putUniqueHeader(sourceIndex, normalizeHeader(sourceHeaders.get(i)), i, location);
         }
 
         Map<Integer, Integer> targetToSourceIndex = new LinkedHashMap<>();
@@ -430,17 +424,6 @@ public class TableMerger {
             headers.clear();
         }
         return headers;
-    }
-
-    private List<String> normalizedNonEmptyValues(List<String> values) {
-        List<String> normalized = new ArrayList<>();
-        for (String value : values) {
-            String item = normalizeHeader(value);
-            if (!item.isEmpty()) {
-                normalized.add(item);
-            }
-        }
-        return normalized;
     }
 
     private void trimTrailingEmptyHeaders(List<String> headers) {

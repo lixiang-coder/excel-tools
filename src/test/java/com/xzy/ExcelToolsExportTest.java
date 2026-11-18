@@ -1,6 +1,7 @@
 package com.xzy;
 
 import com.xzy.model.MappingRelations;
+import com.xzy.util.ExcelUtils;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -70,6 +71,33 @@ public class ExcelToolsExportTest {
         assertArrayEquals(sourceBefore, Files.readAllBytes(source.toPath()));
         assertArrayEquals(templateBefore, Files.readAllBytes(template.toPath()));
         assertEquals(before, directoryEntries());
+    }
+
+    @Test
+    public void duplicateHeadersStopSelectionImportAndExportBeforeChangingResults() throws Exception {
+        File duplicate = workbook("ambiguous", new String[][]{{"Key", "Value", "Key"}, {"first", "v", "last"}});
+        File unique = workbook("unique", new String[][]{{"Key", "Value"}, {"k", "v"}});
+        Map<String, String> columns = Collections.singletonMap("Key", "Value");
+        File output = existingOutput("existing.xlsx");
+        MappingRelations relations = new MappingRelations();
+        relations.add("before", "saved", unique, 2);
+
+        for (IOException error : Arrays.asList(
+                assertThrows(IOException.class, () -> ExcelUtils.readNamedHeaders(duplicate)),
+                assertThrows(IOException.class, () -> ExcelTools.readMappingRelations(duplicate, "Key", "Value", relations)),
+                assertThrows(IOException.class, () -> ExcelTools.exportAppliedMapping(
+                        duplicate, output, "Key", "Value", relations, NO_PROGRESS, NO_LOG)),
+                assertThrows(IOException.class, () -> ExcelTools.exportProcessedExcel(
+                        duplicate, unique, output, columns, NO_PROGRESS, NO_LOG)),
+                assertThrows(IOException.class, () -> ExcelTools.exportProcessedExcel(
+                        unique, duplicate, output, columns, NO_PROGRESS, NO_LOG)))) {
+            assertTrue(error.getMessage(), error.getMessage().contains(duplicate.getName()));
+            assertTrue(error.getMessage(), error.getMessage().contains("Key"));
+            assertTrue(error.getMessage(), error.getMessage().contains("A 列和 C 列"));
+        }
+        assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(output.toPath()));
+        assertEquals(1, relations.size());
+        assertEquals("saved", relations.resolve("before").getValue());
     }
 
     @Test

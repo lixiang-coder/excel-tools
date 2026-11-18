@@ -1,14 +1,22 @@
 package com.xzy;
 
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.BorderStyle;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -16,6 +24,7 @@ import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static org.junit.Assert.*;
 
@@ -72,6 +81,150 @@ public class CrossAndDuplicateExportTest {
             assertEquals(new HashSet<>(Arrays.asList("source.xlsx", "target.xlsx", "output.xlsx")),
                     fileNames(fixture.directory));
         }
+    }
+
+    @Test
+    public void crossSheetChangesOnlyMatchedCellsInModernAndLegacyWorkbooks() throws Exception {
+        Fixture fixture = fixture();
+        for (boolean legacy : new boolean[]{false, true}) {
+            File target = new File(fixture.directory, legacy ? "accounts.xls" : "accounts.xlsx");
+            try (Workbook workbook = legacy ? new HSSFWorkbook() : new XSSFWorkbook();
+                 FileOutputStream stream = new FileOutputStream(target)) {
+                Sheet sheet = workbook.createSheet("Accounts");
+                Row headers = sheet.createRow(0);
+                headers.createCell(0).setCellValue("id");
+                headers.createCell(1).setCellValue("value");
+                Row row = sheet.createRow(1);
+                row.createCell(0).setCellValue("A");
+                Cell formula = row.createCell(1);
+                formula.setCellFormula("1+2");
+                workbook.getCreationHelper().createFormulaEvaluator().evaluateFormulaCell(formula);
+                CellStyle border = workbook.createCellStyle();
+                border.setBorderBottom(BorderStyle.THIN);
+                formula.setCellStyle(border);
+                Cell date = row.createCell(2);
+                date.setCellValue(46100);
+                CellStyle dateStyle = workbook.createCellStyle();
+                dateStyle.setDataFormat(workbook.createDataFormat().getFormat("yyyy-mm-dd"));
+                date.setCellStyle(dateStyle);
+                sheet.setColumnWidth(2, 4096);
+                sheet.addMergedRegion(CellRangeAddress.valueOf("C2:D2"));
+                Sheet other = workbook.createSheet("Hidden");
+                other.createRow(0).createCell(0).setCellFormula("Accounts!B2");
+                workbook.setSheetHidden(1, true);
+                workbook.write(stream);
+            }
+            byte[] original = Files.readAllBytes(target.toPath());
+            for (String extension : legacy ? new String[]{"xls", "xlsx"} : new String[]{"xlsx"}) {
+                File output = new File(fixture.directory, "result." + extension);
+                new CrossSheetFiller().fill(fixture.source.getPath(), target.getPath(), output.getPath(),
+                        "id", "value", "id", "value", null);
+                try (Workbook result = WorkbookFactory.create(output)) {
+                    assertEquals("xls".equals(extension), result instanceof HSSFWorkbook);
+                    assertEquals(2, result.getNumberOfSheets());
+                    Sheet sheet = result.getSheet("Accounts");
+                    Cell filled = sheet.getRow(1).getCell(1);
+                    assertEquals(CellType.STRING, filled.getCellType());
+                    assertEquals("3|first|second|first", filled.getStringCellValue());
+                    assertEquals(BorderStyle.THIN, filled.getCellStyle().getBorderBottom());
+                    assertEquals(46100, sheet.getRow(1).getCell(2).getNumericCellValue(), 0);
+                    assertTrue(DateUtil.isCellDateFormatted(sheet.getRow(1).getCell(2)));
+                    assertEquals(4096, sheet.getColumnWidth(2));
+                    assertEquals("C2:D2", sheet.getMergedRegion(0).formatAsString());
+                    assertTrue(result.isSheetHidden(1));
+                    assertEquals("Accounts!B2", result.getSheet("Hidden").getRow(0).getCell(0).getCellFormula());
+                }
+                assertArrayEquals(original, Files.readAllBytes(target.toPath()));
+            }
+        }
+    }
+
+    @Test
+    public void crossSheetRefusesUncachedFormulasInKeysAndAppendedValues() throws Exception {
+        for (boolean inSource : new boolean[]{true, false}) {
+            for (int column : new int[]{0, 1}) {
+                Fixture fixture = fixture();
+                File input = inSource ? fixture.source : fixture.target;
+                amend(input, workbook -> workbook.getSheetAt(0).getRow(1).createCell(column).setCellFormula("9+9"));
+                File output = existingOutput(fixture);
+                byte[] previous = Files.readAllBytes(output.toPath());
+                IOException error = assertThrows(IOException.class, () -> fill(fixture, output, "id"));
+                assertTrue(error.getMessage(), error.getMessage().contains(input.getName()));
+                assertTrue(error.getMessage(), error.getMessage().contains(column == 0 ? "A2" : "B2"));
+                assertArrayEquals(previous, Files.readAllBytes(output.toPath()));
+            }
+        }
+    }
+
+    @Test
+    public void crossSheetRejectsAmbiguousHeadersBeforePublishing() throws Exception {
+        for (boolean inSource : new boolean[]{true, false}) {
+            Fixture fixture = fixture();
+            File input = inSource ? fixture.source : fixture.target;
+            amend(input, workbook -> workbook.getSheetAt(0).getRow(0).getCell(0).setCellValue("I D"));
+            assertEquals(Arrays.asList("I D", "value", "note"), CrossSheetFiller.readMatchingHeaders(input));
+            amend(input, workbook -> workbook.getSheetAt(0).getRow(0).createCell(3).setCellValue("id"));
+            IOException error = assertThrows(IOException.class, () -> CrossSheetFiller.readMatchingHeaders(input));
+            assertTrue(error.getMessage(), error.getMessage().contains(input.getAbsolutePath()));
+            assertTrue(error.getMessage(), error.getMessage().contains("A 列"));
+            assertTrue(error.getMessage(), error.getMessage().contains("D 列"));
+            File output = existingOutput(fixture);
+            assertFailedExportPreservesFiles(fixture, output, () -> fill(fixture, output, "id"));
+        }
+    }
+
+    @Test
+    public void crossSheetRejectsWritingIntoNonAnchorOrOlderFormat() throws Exception {
+        Fixture fixture = fixture();
+        File legacyOutput = new File(fixture.directory, "result.xls");
+        assertFailedExportPreservesFiles(fixture, legacyOutput, () -> fill(fixture, legacyOutput, "id"));
+        amend(fixture.target, workbook -> workbook.getSheetAt(0).addMergedRegion(CellRangeAddress.valueOf("B3:B4")));
+        File output = existingOutput(fixture);
+        assertFailedExportPreservesFiles(fixture, output, () -> fill(fixture, output, "id"));
+    }
+
+    private static void amend(File file, Consumer<Workbook> edit) throws IOException {
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(Files.readAllBytes(file.toPath())))) {
+            edit.accept(workbook);
+            try (FileOutputStream stream = new FileOutputStream(file)) {
+                workbook.write(stream);
+            }
+        }
+    }
+
+    @Test
+    public void dedupChecksMissingFormulaResultsAndPreservesRealZeroKeys() throws Exception {
+        Fixture fixture = fixture();
+        File output = existingOutput(fixture);
+        byte[] previous = Files.readAllBytes(output.toPath());
+        amend(fixture.source, workbook -> {
+            Sheet sheet = workbook.getSheetAt(0);
+            sheet.getRow(1).createCell(0).setCellValue(0);
+            sheet.getRow(2).createCell(0).setCellFormula("1-1");
+        });
+        IOException error = assertThrows(IOException.class, () -> merge(fixture, output, "id", false));
+        assertTrue(error.getMessage(), error.getMessage().contains("source.xlsx"));
+        assertTrue(error.getMessage(), error.getMessage().contains("Data"));
+        assertTrue(error.getMessage(), error.getMessage().contains("A3"));
+        assertArrayEquals(previous, Files.readAllBytes(output.toPath()));
+
+        amend(fixture.source, workbook -> workbook.getCreationHelper().createFormulaEvaluator().evaluateAll());
+        merge(fixture, output, "id", false);
+        try (Workbook workbook = WorkbookFactory.create(output)) {
+            assertEquals("0", text(workbook.getSheetAt(0), 1, 0));
+            assertEquals("first|second", text(workbook.getSheetAt(0), 1, 1));
+        }
+    }
+
+    @Test
+    public void dedupRejectsAmbiguousKeyIncludingCaseVariants() throws Exception {
+        Fixture fixture = fixture();
+        amend(fixture.source, workbook -> workbook.getSheetAt(0).getRow(0).createCell(3).setCellValue("ID"));
+        File output = existingOutput(fixture);
+        byte[] previous = Files.readAllBytes(output.toPath());
+        IOException error = assertThrows(IOException.class, () -> merge(fixture, output, "id", false));
+        assertTrue(error.getMessage(), error.getMessage().contains("A 列和 D 列"));
+        assertArrayEquals(previous, Files.readAllBytes(output.toPath()));
     }
 
     @Test

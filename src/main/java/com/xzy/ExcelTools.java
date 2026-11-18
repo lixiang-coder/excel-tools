@@ -12,7 +12,6 @@ import com.xzy.panel.DuplicateColPanel;
 import com.xzy.panel.TableMergePanel;
 import com.xzy.util.ExcelUtils;
 import com.xzy.util.FormulaCache;
-import com.xzy.util.LegacyWorkbookConverter;
 import com.xzy.util.SafeExport;
 import com.xzy.util.XlsxSheetReader;
 import org.apache.logging.log4j.LogManager;
@@ -24,8 +23,6 @@ import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.streaming.SXSSFSheet;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.apache.poi.xssf.usermodel.XSSFCell;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTWorkbook;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -517,17 +514,8 @@ public class ExcelTools {
 
     private void addMappingPanelEventHandlers(JButton uploadButton, JButton saveButton,
                                               JList<String> sourceList, JList<String> targetList) {
-        // 添加上传按钮事件
-        uploadButton.addActionListener(e -> {
-            JFileChooser fileChooser = new JFileChooser();
-            fileChooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-
-            int result = fileChooser.showOpenDialog(mainFrame);
-            if (result == JFileChooser.APPROVE_OPTION) {
-                currentMappingFile = fileChooser.getSelectedFile();
-                loadMappingHeaders(currentMappingFile, sourceList, targetList);
-            }
-        });
+        uploadButton.addActionListener(e -> chooseMappingFile(sourceList, targetList, currentMappingFile,
+                file -> currentMappingFile = file));
 
         // 添加保存按钮事件
         saveButton.addActionListener(e -> {
@@ -543,30 +531,6 @@ public class ExcelTools {
                         JOptionPane.INFORMATION_MESSAGE);
             }
         });
-    }
-
-    private void loadMappingHeaders(File file, JList<String> sourceList, JList<String> targetList) {
-        try {
-            DefaultListModel<String> sourceModel = new DefaultListModel<>();
-            DefaultListModel<String> targetModel = new DefaultListModel<>();
-            for (String header : ExcelUtils.readNamedHeaders(file)) {
-                sourceModel.addElement(header);
-                targetModel.addElement(header);
-            }
-
-            sourceList.setModel(sourceModel);
-            targetList.setModel(targetModel);
-
-            statusLabel.setText("已加载 " + sourceModel.size() + " 个表头");
-            log("成功加载表头: " + file.getName());
-
-        } catch (IOException e) {
-            log("加载表头时出错: " + e.getMessage());
-            JOptionPane.showMessageDialog(mainFrame,
-                    "加载表头时出错: " + e.getMessage(),
-                    "错误",
-                    JOptionPane.ERROR_MESSAGE);
-        }
     }
 
     private void saveMapping(File file, String sourceField, String targetField) {
@@ -627,7 +591,8 @@ public class ExcelTools {
             Sheet sheet = workbook.getSheetAt(0);
 
             // 获取表头索引
-            Map<String, Integer> headerIndexMap = indexNamedHeaders(ExcelUtils.readHeaderRow(sheet.getRow(0)));
+            Map<String, Integer> headerIndexMap = ExcelUtils.indexNamedHeaders(
+                    ExcelUtils.readHeaderRow(sheet.getRow(0)), file.getName() + " / " + sheet.getSheetName());
 
             // 获取源字段和目标字段的索引
             Integer sourceIndex = headerIndexMap.get(sourceField.trim());
@@ -647,8 +612,8 @@ public class ExcelTools {
                 Cell targetCell = row.getCell(targetIndex);
 
                 if (sourceCell != null && targetCell != null) {
-                    String sourceValue = readMappingCellValue(file, sourceCell);
-                    String targetValue = readMappingCellValue(file, targetCell);
+                    String sourceValue = ExcelUtils.getCheckedCellText(file, sourceCell);
+                    String targetValue = ExcelUtils.getCheckedCellText(file, targetCell);
 
                     if (!sourceValue.isEmpty() && !targetValue.isEmpty()) {
                         imported.add(sourceValue, targetValue, file, i + 1);
@@ -662,63 +627,10 @@ public class ExcelTools {
         return savedRelations;
     }
 
-    private static String readMappingCellValue(File file, Cell cell) throws IOException {
-        if (cell.getCellType() == CellType.FORMULA) {
-            try {
-                FormulaCache.read(cell);
-            } catch (FormulaCache.FormulaCacheException e) {
-                throw e.inFile(file);
-            }
-        }
-        return ExcelUtils.getCellValueAsString(cell);
-    }
-
     private void addApplyPanelEventHandlers(JButton uploadButton, JButton applyButton,
                                             JList<String> lookupList, JList<String> fillList) {
-        // 添加上传按钮事件
-        uploadButton.addActionListener(e -> {
-            JFileChooser fileChooser = new JFileChooser();
-            fileChooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-
-            int result = fileChooser.showOpenDialog(mainFrame);
-            if (result == JFileChooser.APPROVE_OPTION) {
-                currentTargetFile = fileChooser.getSelectedFile();
-                // 使用SwingWorker + 进度对话框加载表头，避免UI冻结
-                ProgressDialog progressDialog = ProgressDialog.create(mainFrame,"加载表头");
-                SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
-                    @Override
-                    protected List<String> doInBackground() throws Exception {
-                        return ExcelUtils.readNamedHeaders(currentTargetFile);
-                    }
-
-                    @Override
-                    protected void done() {
-                        progressDialog.dialog.dispose();
-                        try {
-                            List<String> headers = get();
-                            DefaultListModel<String> lookupModel = new DefaultListModel<>();
-                            DefaultListModel<String> fillModel = new DefaultListModel<>();
-                            for (String header : headers) {
-                                lookupModel.addElement(header);
-                                fillModel.addElement(header);
-                            }
-                            lookupList.setModel(lookupModel);
-                            fillList.setModel(fillModel);
-                            statusLabel.setText("已加载 " + headers.size() + " 个表头");
-                            log("成功加载表头: " + currentTargetFile.getName());
-                        } catch (Exception ex) {
-                            log("加载表头时出错: " + ex.getMessage());
-                            JOptionPane.showMessageDialog(mainFrame,
-                                    "加载表头时出错: " + ex.getMessage(),
-                                    "错误",
-                                    JOptionPane.ERROR_MESSAGE);
-                        }
-                    }
-                };
-                worker.execute();
-                progressDialog.dialog.setVisible(true);
-            }
-        });
+        uploadButton.addActionListener(e -> chooseMappingFile(lookupList, fillList, currentTargetFile,
+                file -> currentTargetFile = file));
 
         // 添加应用按钮事件
         applyButton.addActionListener(e -> {
@@ -736,6 +648,50 @@ public class ExcelTools {
         });
     }
 
+    private void chooseMappingFile(JList<String> firstList, JList<String> secondList,
+                                   File currentFile, Consumer<File> activate) {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
+        if (chooser.showOpenDialog(mainFrame) != JFileChooser.APPROVE_OPTION) return;
+        File selectedFile = chooser.getSelectedFile();
+        ProgressDialog progress = ProgressDialog.create(mainFrame, "加载表头");
+        SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
+            @Override
+            protected List<String> doInBackground() throws IOException {
+                return ExcelUtils.readNamedHeaders(selectedFile);
+            }
+
+            @Override
+            protected void done() {
+                progress.dialog.dispose();
+                if (isCancelled()) return;
+                try {
+                    List<String> headers = get();
+                    String[] fields = headers.toArray(new String[0]);
+                    firstList.setListData(fields);
+                    secondList.setListData(fields);
+                    activate.accept(selectedFile);
+                    statusLabel.setText("当前文件：" + selectedFile.getName() + "（" + fields.length + " 个表头）");
+                    log("成功加载表头：" + selectedFile.getName());
+                } catch (Exception ex) {
+                    Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                    String message = "加载表头失败：" + cause.getMessage();
+                    statusLabel.setText(currentFile == null ? "请选择有效的 Excel 文件" : "当前文件：" + currentFile.getName());
+                    log(message);
+                    showError(message);
+                }
+            }
+        };
+        progress.dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent event) {
+                worker.cancel(true);
+            }
+        });
+        worker.execute();
+        progress.dialog.setVisible(true);
+    }
+
     private void applyMapping(File file, String lookupField, String fillField) {
         if (mappingRelations.isEmpty()) {
             JOptionPane.showMessageDialog(mainFrame,
@@ -745,26 +701,8 @@ public class ExcelTools {
             return;
         }
 
-        boolean legacy = file.getName().toLowerCase(Locale.ROOT).endsWith(".xls");
-        JFileChooser fileChooser = new JFileChooser(file.getAbsoluteFile().getParentFile());
-        fileChooser.setAcceptAllFileFilterUsed(false);
-        fileChooser.setFileFilter(legacy
-                ? new FileNameExtensionFilter("Excel 工作簿 (*.xls, *.xlsx)", "xls", "xlsx")
-                : new FileNameExtensionFilter("Excel 工作簿 (*.xlsx)", "xlsx"));
-        String name = file.getName();
-        int dot = name.lastIndexOf('.');
-        String basename = dot > 0 ? name.substring(0, dot) : name;
-        fileChooser.setSelectedFile(new File(file.getAbsoluteFile().getParentFile(),
-                basename + "-已填充" + (legacy ? ".xls" : ".xlsx")));
-        fileChooser.setDialogTitle("保存应用映射后的工作簿");
-
-        int result = fileChooser.showSaveDialog(mainFrame);
-        if (result == JFileChooser.APPROVE_OPTION) {
-            File chosen = fileChooser.getSelectedFile();
-            String suffix = chosen.getName().toLowerCase(Locale.ROOT);
-            File outputFile = suffix.endsWith(".xls") || suffix.endsWith(".xlsx")
-                    ? chosen : new File(chosen.getPath() + (legacy ? ".xls" : ".xlsx"));
-
+        File outputFile = Workbench.chooseFilledWorkbook(mainFrame, file, "保存应用映射后的工作簿");
+        if (outputFile != null) {
             ProgressDialog progressDialog = ProgressDialog.create(mainFrame,"处理中");
 
             // 在后台线程中处理数据，只有安全提交完成后才发布成功状态。
@@ -817,10 +755,11 @@ public class ExcelTools {
         Map<String, Integer> indices = new HashMap<>();
         Row header = headerRow < 0 ? null : sheet.getRow(headerRow);
         if (header != null) {
+            String location = file.getName() + " / " + sheet.getSheetName();
             for (Cell cell : header) {
-                String name = readMappingCellValue(file, cell);
+                String name = ExcelUtils.getCheckedCellText(file, cell);
                 if (cell instanceof XSSFCell) name = xlsxLookupText((XSSFCell) cell, name);
-                if (name != null && !name.trim().isEmpty()) indices.put(name, cell.getColumnIndex());
+                ExcelUtils.putUniqueHeader(indices, name, cell.getColumnIndex(), location);
             }
         }
         Integer lookup = indices.get(lookupField);
@@ -849,7 +788,7 @@ public class ExcelTools {
             }
             Cell key = row.getCell(lookup);
             if (key == null) continue;
-            String lookupKey = readMappingCellValue(file, key);
+            String lookupKey = ExcelUtils.getCheckedCellText(file, key);
             String fallback = lookupKey;
             if (key instanceof XSSFCell) {
                 fallback = xlsxLookupText((XSSFCell) key, lookupKey);
@@ -886,13 +825,7 @@ public class ExcelTools {
             if (value != null) stats[1]++;
         }
         if (filled) {
-            if (workbook instanceof XSSFWorkbook) {
-                // 保留用户的手动/自动计算模式，仅标记依赖单元格需要刷新。
-                CTWorkbook xml = ((XSSFWorkbook) workbook).getCTWorkbook();
-                (xml.isSetCalcPr() ? xml.getCalcPr() : xml.addNewCalcPr()).setFullCalcOnLoad(true);
-            } else {
-                workbook.setForceFormulaRecalculation(true);
-            }
+            ExcelUtils.markForRecalculation(workbook);
         }
         return stats;
     }
@@ -1040,11 +973,7 @@ public class ExcelTools {
                 }
                 stats = applyToWorkbook(inputFile, workbook, lookupField, fillField, mappingRelations, progress, log);
                 try (FileOutputStream stream = new FileOutputStream(export.temporaryFile())) {
-                    if (workbook instanceof HSSFWorkbook && !xlsOutput) {
-                        LegacyWorkbookConverter.writeXlsx((HSSFWorkbook) workbook, stream);
-                    } else {
-                        workbook.write(stream);
-                    }
+                    ExcelUtils.writeFilledWorkbook(workbook, outputFile, stream);
                 }
             }
             export.commit();
@@ -1063,17 +992,6 @@ public class ExcelTools {
         }
     }
 
-    private static Map<String, Integer> indexNamedHeaders(List<String> headers) {
-        Map<String, Integer> indices = new HashMap<>();
-        for (int column = 0; column < headers.size(); column++) {
-            String name = headers.get(column);
-            if (!name.trim().isEmpty()) {
-                indices.put(name, column);
-            }
-        }
-        return indices;
-    }
-
     private static int writeProcessedExcel(File inputFile, File templateFile, File outputFile,
                                            Map<String, String> mappings, BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
         int totalProcessed;
@@ -1090,7 +1008,8 @@ public class ExcelTools {
         }
 
         // 预建模板表头索引Map
-        Map<String, Integer> templateHeaderIndexMap = indexNamedHeaders(templateHeaders);
+        Map<String, Integer> templateHeaderIndexMap = ExcelUtils.indexNamedHeaders(
+                templateHeaders, templateFile.getName() + " / 首个工作表");
 
         // 使用SXSSFWorkbook流式写入输出
         try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
@@ -1112,7 +1031,8 @@ public class ExcelTools {
                 List<String> sourceHeaders = XlsxSheetReader.readHeaders(inputFile);
 
                 // 构建源表头索引
-                Map<String, Integer> sourceHeaderMap = indexNamedHeaders(sourceHeaders);
+                Map<String, Integer> sourceHeaderMap = ExcelUtils.indexNamedHeaders(
+                        sourceHeaders, inputFile.getName() + " / 首个工作表");
 
                 log.accept("源表表头: " + sourceHeaders);
 
@@ -1190,7 +1110,8 @@ public class ExcelTools {
                      Workbook workbook = WorkbookFactory.create(fis)) {
                     Sheet sheet = workbook.getSheetAt(0);
 
-                    Map<String, Integer> sourceHeaderMap = indexNamedHeaders(ExcelUtils.readHeaderRow(sheet.getRow(0)));
+                    Map<String, Integer> sourceHeaderMap = ExcelUtils.indexNamedHeaders(
+                            ExcelUtils.readHeaderRow(sheet.getRow(0)), inputFile.getName() + " / " + sheet.getSheetName());
 
                     int totalRows = sheet.getLastRowNum();
                     int processedRows = 0;

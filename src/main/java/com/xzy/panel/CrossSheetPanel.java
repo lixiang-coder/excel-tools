@@ -4,7 +4,6 @@ import com.xzy.CrossSheetFiller;
 import com.xzy.model.AppContext;
 import com.xzy.model.ProgressDialog;
 import com.xzy.ui.Workbench;
-import com.xzy.util.ExcelUtils;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -48,10 +47,11 @@ public class CrossSheetPanel {
                 ProgressDialog progressDialog = ProgressDialog.create(ctx.getMainFrame(), "加载源表表头");
                 SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                     java.util.List<String> headers = null;
+                    String error;
                     @Override
                     protected Void doInBackground() {
-                        try { headers = ExcelUtils.readNamedHeaders(new File(aPath.getText())); }
-                        catch (Exception ex) { headers = null; }
+                        try { headers = CrossSheetFiller.readMatchingHeaders(new File(aPath.getText())); }
+                        catch (Exception ex) { error = ex.getMessage(); }
                         return null;
                     }
                     @Override
@@ -64,7 +64,8 @@ public class CrossSheetPanel {
                             if (aKeyCombo.getItemCount() > 0) aKeyCombo.setSelectedIndex(0);
                             if (aValCombo.getItemCount() > 0) aValCombo.setSelectedIndex(0);
                         } else {
-                            aHeadersArea.setText("读取源表表头失败");
+                            aHeadersArea.setText("读取源表表头失败：" + error);
+                            ctx.log(aHeadersArea.getText());
                             aKeyCombo.removeAllItems(); aValCombo.removeAllItems();
                         }
                     }
@@ -82,10 +83,11 @@ public class CrossSheetPanel {
                 ProgressDialog progressDialog = ProgressDialog.create(ctx.getMainFrame(), "加载目标表表头");
                 SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                     java.util.List<String> headers = null;
+                    String error;
                     @Override
                     protected Void doInBackground() {
-                        try { headers = ExcelUtils.readNamedHeaders(new File(bPath.getText())); }
-                        catch (Exception ex) { headers = null; }
+                        try { headers = CrossSheetFiller.readMatchingHeaders(new File(bPath.getText())); }
+                        catch (Exception ex) { error = ex.getMessage(); }
                         return null;
                     }
                     @Override
@@ -98,7 +100,8 @@ public class CrossSheetPanel {
                             if (bKeyCombo.getItemCount() > 0) bKeyCombo.setSelectedIndex(0);
                             if (bValCombo.getItemCount() > 0) bValCombo.setSelectedIndex(0);
                         } else {
-                            bHeadersArea.setText("读取目标表表头失败");
+                            bHeadersArea.setText("读取目标表表头失败：" + error);
+                            ctx.log(bHeadersArea.getText());
                             bKeyCombo.removeAllItems(); bValCombo.removeAllItems();
                         }
                     }
@@ -110,16 +113,6 @@ public class CrossSheetPanel {
         runBtn.addActionListener(e -> {
             String aPathVal = aPath.getText();
             String bPathVal = bPath.getText();
-            JFileChooser fc = new JFileChooser();
-            fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-            fc.setDialogTitle("选择输出文件");
-            if (fc.showSaveDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
-                ctx.log("未选择输出文件，操作取消");
-                return;
-            }
-            String outPathRaw = fc.getSelectedFile().getAbsolutePath();
-            final String outPathVal = outPathRaw.toLowerCase().endsWith(".xlsx") ? outPathRaw : outPathRaw + ".xlsx";
-            ctx.log("已选择输出: " + outPathVal);
             String aKey = (String) aKeyCombo.getSelectedItem();
             String aVal = (String) aValCombo.getSelectedItem();
             String bKey = (String) bKeyCombo.getSelectedItem();
@@ -130,6 +123,13 @@ public class CrossSheetPanel {
                 JOptionPane.showMessageDialog(mainPanel, "请先选择所有文件和表头映射项！", "提示", JOptionPane.WARNING_MESSAGE);
                 return;
             }
+            File output = Workbench.chooseFilledWorkbook(mainPanel, new File(bPathVal), "保存跨表填充后的工作簿");
+            if (output == null) {
+                ctx.log("未选择输出文件，操作取消");
+                return;
+            }
+            String outPathVal = output.getAbsolutePath();
+            ctx.log("已选择输出: " + outPathVal);
             ProgressDialog progressDialog = ProgressDialog.create(ctx.getMainFrame(), "处理中");
             SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
                 @Override

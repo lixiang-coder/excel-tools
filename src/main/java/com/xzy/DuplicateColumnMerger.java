@@ -1,6 +1,7 @@
 package com.xzy;
 
 import com.xzy.util.ExcelUtils;
+import com.xzy.util.FormulaCache.FormulaCacheException;
 import com.xzy.util.SafeExport;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Predicate;
 
 /**
@@ -151,36 +153,32 @@ public class DuplicateColumnMerger {
                 JFileChooser fc = new JFileChooser();
                 fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
                 if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
-                    inputPath.setText(fc.getSelectedFile().getAbsolutePath());
+                    File input = fc.getSelectedFile();
+                    inputPath.setText(input.getAbsolutePath());
                     status.setText("已选择输入: " + inputPath.getText());
                     JProgressBar[] progressBarHolder = new JProgressBar[1];
                     JLabel[] percentLabelHolder = new JLabel[1];
                     JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载输入文件表头，请稍候...", true, progressBarHolder, percentLabelHolder);
-                    SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                        java.util.List<String> headers = null;
+                    SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
                         @Override
-                        protected Void doInBackground() throws Exception {
-                            try {
-                                headers = ExcelUtils.readNamedHeaders(new File(inputPath.getText()));
-                            } catch (Exception ex) {
-                                headers = null;
-                            }
-                            return null;
+                        protected List<String> doInBackground() throws IOException {
+                            return ExcelUtils.readNamedHeaders(input, String.CASE_INSENSITIVE_ORDER);
                         }
                         @Override
                         protected void done() {
                             progressDialog.dispose();
-                            if (headers != null) {
-                                customerIdCombo.removeAllItems();
-                                mergeColsModel.clear();
-                                for (String h : headers) {
+                            customerIdCombo.removeAllItems();
+                            mergeColsModel.clear();
+                            try {
+                                for (String h : get()) {
                                     customerIdCombo.addItem(h);
                                     mergeColsModel.addElement(h);
                                 }
                                 if (customerIdCombo.getItemCount() > 0) customerIdCombo.setSelectedIndex(0);
-                            } else {
-                                customerIdCombo.removeAllItems();
-                                mergeColsModel.clear();
+                            } catch (Exception ex) {
+                                Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                                status.setText("加载表头失败：" + cause.getMessage());
+                                JOptionPane.showMessageDialog(frame, cause.getMessage(), "加载表头失败", JOptionPane.ERROR_MESSAGE);
                             }
                         }
                     };
@@ -280,18 +278,20 @@ public class DuplicateColumnMerger {
                     Sheet sourceSheet = source.getSheetAt(0);
                     Row header = sourceSheet.getRow(0);
                     if (header == null) throw new IOException("源文件没有表头");
-                    int keyIndex = -1;
                     boolean[] mergeColumns = new boolean[Math.max(0, header.getLastCellNum())];
                     Sheet output = result.createSheet("Sheet1");
                     Row outputHeader = output.createRow(0);
+                    Map<String, Integer> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+                    String location = input.getAbsolutePath() + " / " + sourceSheet.getSheetName();
                     for (int column = 0; column < mergeColumns.length; column++) {
                         Cell headerCell = header.getCell(column);
-                        String name = headerCell == null ? "" : headerCell.getStringCellValue();
-                        if (!name.isEmpty() && keyColumn.equalsIgnoreCase(name)) keyIndex = column;
+                        String name = ExcelUtils.getCheckedCellText(input, headerCell);
+                        ExcelUtils.putUniqueHeader(headers, name, column, location);
                         mergeColumns[column] = shouldMerge.test(name);
                         if (headerCell != null) outputHeader.createCell(column).setCellValue(name);
                     }
-                    if (keyIndex == -1) throw new IOException("未找到重复列 '" + keyColumn + "'");
+                    Integer keyIndex = headers.get(keyColumn);
+                    if (keyIndex == null) throw new IOException("未找到重复列 '" + keyColumn + "'");
                     report = mergeRows(sourceSheet, output, keyIndex, mergeColumns, progress);
                     try (FileOutputStream out = new FileOutputStream(export.temporaryFile())) {
                         result.write(out);
@@ -302,11 +302,13 @@ public class DuplicateColumnMerger {
             }
             export.commit();
             return report;
+        } catch (FormulaCacheException e) {
+            throw e.inFile(input);
         }
     }
 
     private static MergeReport mergeRows(Sheet source, Sheet output, int keyIndex,
-                                         boolean[] mergeColumns, ProgressListener progress) {
+                                         boolean[] mergeColumns, ProgressListener progress) throws IOException {
         Map<String, List<Row>> keyedGroups = new HashMap<>();
         // 每个正常主键仅登记首行，空主键的数据行各自登记，二者保持输入顺序。
         List<Row> outputOrder = new ArrayList<>();
@@ -317,7 +319,7 @@ public class DuplicateColumnMerger {
             int rowIndex = row.getRowNum();
             if (rowIndex == 0) continue;
             Cell keyCell = row.getCell(keyIndex);
-            String key = ExcelUtils.getCellValueAsString(keyCell);
+            String key = ExcelUtils.getCheckedCellText(keyCell);
             if (!isBlank(key)) {
                 List<Row> group = keyedGroups.get(key);
                 if (group == null) {
@@ -350,11 +352,11 @@ public class DuplicateColumnMerger {
         return new MergeReport(inputRows, outputRows, blankKeyRows);
     }
 
-    private static void writeGroup(List<Row> rows, Row target, boolean[] mergeColumns) {
+    private static void writeGroup(List<Row> rows, Row target, boolean[] mergeColumns) throws IOException {
         for (int column = 0; column < mergeColumns.length; column++) {
             Set<String> values = new LinkedHashSet<>();
             for (Row row : rows) {
-                String text = ExcelUtils.getCellValueAsString(row.getCell(column));
+                String text = ExcelUtils.getCheckedCellText(row.getCell(column));
                 if (!text.isEmpty()) {
                     values.add(text);
                     if (!mergeColumns[column]) break;
@@ -364,7 +366,7 @@ public class DuplicateColumnMerger {
         }
     }
 
-    private static void writeIndependentRow(Row source, Row target, int keyIndex) {
+    private static void writeIndependentRow(Row source, Row target, int keyIndex) throws IOException {
         for (Cell cell : source) {
             String value = independentCellText(cell);
             if (value.isEmpty() || (cell.getColumnIndex() == keyIndex && isBlank(value))) continue;
@@ -372,17 +374,18 @@ public class DuplicateColumnMerger {
         }
     }
 
-    private static boolean hasData(Row row) {
+    private static boolean hasData(Row row) throws IOException {
         for (Cell cell : row) {
             if (!isBlank(independentCellText(cell))) return true;
         }
         return false;
     }
 
-    private static String independentCellText(Cell cell) {
+    private static String independentCellText(Cell cell) throws IOException {
+        String text = ExcelUtils.getCheckedCellText(cell);
         if (isErrorCell(cell)) return FormulaError.forInt(cell.getErrorCellValue()).getString();
         if (cell != null && cell.getCellType() == CellType.STRING) return cell.getStringCellValue();
-        return ExcelUtils.getCellValueAsString(cell);
+        return text;
     }
 
     private static boolean isErrorCell(Cell cell) {
