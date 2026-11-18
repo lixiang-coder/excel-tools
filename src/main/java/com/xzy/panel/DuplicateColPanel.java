@@ -77,7 +77,7 @@ public class DuplicateColPanel {
                     java.util.List<String> headers = null;
                     @Override
                     protected Void doInBackground() {
-                        try { headers = ExcelUtils.readHeadersOnly(new File(inputPath.getText())); }
+                        try { headers = ExcelUtils.readNamedHeaders(new File(inputPath.getText())); }
                         catch (Exception ex) { headers = null; }
                         return null;
                     }

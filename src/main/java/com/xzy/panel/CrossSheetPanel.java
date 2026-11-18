@@ -142,7 +142,7 @@ public class CrossSheetPanel {
                     java.util.List<String> headers = null;
                     @Override
                     protected Void doInBackground() {
-                        try { headers = ExcelUtils.readHeadersOnly(new File(aPath.getText())); }
+                        try { headers = ExcelUtils.readNamedHeaders(new File(aPath.getText())); }
                         catch (Exception ex) { headers = null; }
                         return null;
                     }
@@ -176,7 +176,7 @@ public class CrossSheetPanel {
                     java.util.List<String> headers = null;
                     @Override
                     protected Void doInBackground() {
-                        try { headers = ExcelUtils.readHeadersOnly(new File(bPath.getText())); }
+                        try { headers = ExcelUtils.readNamedHeaders(new File(bPath.getText())); }
                         catch (Exception ex) { headers = null; }
                         return null;
                     }

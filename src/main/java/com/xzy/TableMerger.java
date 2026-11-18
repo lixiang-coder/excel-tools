@@ -5,11 +5,15 @@ import com.xzy.util.SafeExport;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.CellValue;
+import org.apache.poi.ss.usermodel.FormulaError;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFCell;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -74,6 +78,8 @@ public class TableMerger {
                 }
             }
             export.commit();
+        } catch (FormulaCacheException e) {
+            throw e.inFile(inputFile);
         } catch (IOException e) {
             throw e;
         } catch (Exception e) {
@@ -146,7 +152,7 @@ public class TableMerger {
         }
     }
 
-    private void processFirstSheetHeaderBased(File inputFile, HeaderMergeWriter writer) {
+    private void processFirstSheetHeaderBased(File inputFile, HeaderMergeWriter writer) throws IOException {
         if (inputFile == null || !inputFile.exists() || !inputFile.canRead()) {
             String path = inputFile == null ? "" : inputFile.getAbsolutePath();
             writer.addReport(path, "", "失败", 0, 0, "无法读取文件");
@@ -160,13 +166,16 @@ public class TableMerger {
                 return;
             }
             processHeaderSheet(inputFile.getAbsolutePath(), workbook.getSheetAt(0), writer);
+        } catch (FormulaCacheException e) {
+            throw e.inFile(inputFile);
         } catch (Exception e) {
             logger.warn("处理文件失败: {}", inputFile.getAbsolutePath(), e);
             writer.addReport(inputFile.getAbsolutePath(), "", "失败", 0, 0, e.getMessage());
         }
     }
 
-    private void processHeaderSheet(String sourceFile, Sheet sourceSheet, HeaderMergeWriter writer) {
+    private void processHeaderSheet(String sourceFile, Sheet sourceSheet, HeaderMergeWriter writer)
+            throws FormulaCacheException {
         String sheetName = sourceSheet == null ? "" : sourceSheet.getSheetName();
         if (sourceSheet == null) {
             writer.addReport(sourceFile, sheetName, "失败", 0, 0, "未找到有效表头");
@@ -228,6 +237,8 @@ public class TableMerger {
                             } else {
                                 writer.processSheet(inputFile, i + 1, workbook.getSheetAt(0));
                             }
+                        } catch (FormulaCacheException e) {
+                            throw e.inFile(inputFile);
                         } catch (Exception e) {
                             logger.warn("处理文件失败: {}", inputFile.getAbsolutePath(), e);
                             writer.addFailure(inputFile, i + 1, "", "失败：" + e.getMessage());
@@ -252,7 +263,7 @@ public class TableMerger {
         return requestedStrategy;
     }
 
-    private List<List<String>> collectSheetSamples(Workbook workbook) {
+    private List<List<String>> collectSheetSamples(Workbook workbook) throws FormulaCacheException {
         List<List<String>> samples = new ArrayList<>();
         for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
             Sheet sheet = workbook.getSheetAt(i);
@@ -264,7 +275,7 @@ public class TableMerger {
         return samples;
     }
 
-    private List<List<String>> collectFileSamples(List<File> inputFiles) {
+    private List<List<String>> collectFileSamples(List<File> inputFiles) throws IOException {
         List<List<String>> samples = new ArrayList<>();
         for (File inputFile : inputFiles) {
             if (inputFile == null || !inputFile.exists() || !inputFile.canRead()) {
@@ -278,6 +289,8 @@ public class TableMerger {
                         samples.add(row);
                     }
                 }
+            } catch (FormulaCacheException e) {
+                throw e.inFile(inputFile);
             } catch (Exception e) {
                 logger.warn("采集合并样本失败: {}", inputFile.getAbsolutePath(), e);
             }
@@ -351,7 +364,7 @@ public class TableMerger {
         return text.matches("\\d+(\\.\\d+)?");
     }
 
-    private List<String> firstNonEmptyRowValues(Sheet sheet) {
+    private List<String> firstNonEmptyRowValues(Sheet sheet) throws FormulaCacheException {
         List<String> values = new ArrayList<>();
         if (sheet == null) {
             return values;
@@ -361,7 +374,7 @@ public class TableMerger {
             if (hasAnyCellValue(row)) {
                 int lastCell = Math.max(row.getLastCellNum(), (short) 0);
                 for (int c = 0; c < lastCell; c++) {
-                    values.add(ExcelUtils.getCellValueAsString(row.getCell(c)));
+                    values.add(readMergeCellText(row.getCell(c)));
                 }
                 trimTrailingEmptyHeaders(values);
                 return values;
@@ -392,13 +405,13 @@ public class TableMerger {
         return new SourceMapping(targetToSourceIndex, missingHeaders);
     }
 
-    private List<String> readHeaders(Row headerRow) {
+    private List<String> readHeaders(Row headerRow) throws FormulaCacheException {
         List<String> headers = new ArrayList<>();
         if (headerRow == null || headerRow.getLastCellNum() <= 0) {
             return headers;
         }
         for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-            String header = ExcelUtils.getCellValueAsString(headerRow.getCell(i));
+            String header = readMergeCellText(headerRow.getCell(i));
             if (header != null) {
                 header = header.trim();
             }
@@ -444,12 +457,97 @@ public class TableMerger {
             return false;
         }
         for (int i = 0; i < row.getLastCellNum(); i++) {
-            String value = ExcelUtils.getCellValueAsString(row.getCell(i));
+            Cell cell = row.getCell(i);
+            // 公式的空文本和错误结果也必须保留，不能把整行当作空行跳过。
+            if (cell != null && cell.getCellType() == CellType.FORMULA) {
+                return true;
+            }
+            String value = ExcelUtils.getCellValueAsString(cell);
             if (value != null && !value.trim().isEmpty()) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static String readMergeCellText(Cell cell) throws FormulaCacheException {
+        if (cell != null && cell.getCellType() == CellType.FORMULA) {
+            CellValue result = readCachedFormulaValue(cell);
+            if (result.getCellType() == CellType.ERROR) {
+                return FormulaError.forInt(result.getErrorValue()).getString();
+            }
+        }
+        return ExcelUtils.getCellValueAsString(cell);
+    }
+
+    private static CellValue readCachedFormulaValue(Cell cell) throws FormulaCacheException {
+        try {
+            CellType resultType = cell.getCachedFormulaResultType();
+            if (cell instanceof XSSFCell) {
+                // XSSF 会把缺失的数值缓存读为 0；已保存的数值 0 和空文本缓存均合法。
+                String raw = ((XSSFCell) cell).getRawValue();
+                if (raw == null || (resultType != CellType.STRING && raw.trim().isEmpty())) {
+                    throw new FormulaCacheException(cell, null);
+                }
+                if (resultType == CellType.BOOLEAN && !"0".equals(raw) && !"1".equals(raw)) {
+                    throw new FormulaCacheException(cell, null);
+                }
+            }
+            switch (resultType) {
+                case NUMERIC:
+                    double value = cell.getNumericCellValue();
+                    if (Double.isNaN(value) || Double.isInfinite(value)) {
+                        throw new FormulaCacheException(cell, null);
+                    }
+                    return new CellValue(value);
+                case STRING:
+                    return new CellValue(cell.getStringCellValue());
+                case BOOLEAN:
+                    return CellValue.valueOf(cell.getBooleanCellValue());
+                case ERROR:
+                    return CellValue.getError(cell.getErrorCellValue());
+                default:
+                    throw new FormulaCacheException(cell, null);
+            }
+        } catch (RuntimeException e) {
+            throw new FormulaCacheException(cell, e);
+        }
+    }
+
+    private static void copyMergedCellValue(Cell source, Cell target) throws FormulaCacheException {
+        if (source.getCellType() != CellType.FORMULA) {
+            ExcelUtils.copyCellValue(source, target);
+            return;
+        }
+        CellValue value = readCachedFormulaValue(source);
+        switch (value.getCellType()) {
+            case NUMERIC:
+                target.setCellValue(value.getNumberValue());
+                break;
+            case STRING:
+                target.setCellValue(value.getStringValue());
+                break;
+            case BOOLEAN:
+                target.setCellValue(value.getBooleanValue());
+                break;
+            case ERROR:
+                target.setCellErrorValue(value.getErrorValue());
+                break;
+            default:
+                throw new FormulaCacheException(source, null);
+        }
+    }
+
+    private static class FormulaCacheException extends IOException {
+        private IOException inFile(File source) {
+            return new IOException(source.getAbsolutePath() + "：" + getMessage(), this);
+        }
+
+        private FormulaCacheException(Cell cell, Throwable cause) {
+            super("工作表“" + cell.getSheet().getSheetName() + "”的单元格 "
+                    + cell.getAddress().formatAsString()
+                    + " 缺少有效的公式缓存结果，请在 Excel 或 WPS 中重新计算并保存源文件后重试。", cause);
+        }
     }
 
     private File prepareOutputFile(String outputFilePath) throws IOException {
@@ -545,7 +643,8 @@ public class TableMerger {
             return standardHeaders == null ? new ArrayList<>() : new ArrayList<>(standardHeaders);
         }
 
-        private void appendDataRow(Row sourceRow, Map<Integer, Integer> targetToSourceIndex) {
+        private void appendDataRow(Row sourceRow, Map<Integer, Integer> targetToSourceIndex)
+                throws FormulaCacheException {
             Row outputRow = dataSheet.createRow(dataRowIndex++);
             if (standardHeaders == null) {
                 return;
@@ -559,7 +658,7 @@ public class TableMerger {
                 }
                 Cell sourceCell = sourceRow.getCell(sourceIndex);
                 if (sourceCell != null) {
-                    ExcelUtils.copyCellValue(sourceCell, outputCell);
+                    copyMergedCellValue(sourceCell, outputCell);
                 }
             }
         }
@@ -639,7 +738,7 @@ public class TableMerger {
             this.dataSheet = workbook.createSheet(WPS_DATA_SHEET_NAME);
         }
 
-        private void processSheet(File inputFile, int workbookIndex, Sheet sourceSheet) {
+        private void processSheet(File inputFile, int workbookIndex, Sheet sourceSheet) throws FormulaCacheException {
             String sheetName = sourceSheet == null ? "" : sourceSheet.getSheetName();
             if (sourceSheet == null) {
                 addFailure(inputFile, workbookIndex, sheetName, "失败：没有数据");
@@ -660,7 +759,7 @@ public class TableMerger {
                     Cell sourceCell = sourceRow.getCell(i);
                     Cell outputCell = outputRow.createCell(i + 1);
                     if (sourceCell != null) {
-                        ExcelUtils.copyCellValue(sourceCell, outputCell);
+                        copyMergedCellValue(sourceCell, outputCell);
                     }
                 }
             }

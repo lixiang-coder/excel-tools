@@ -8,19 +8,13 @@ import com.xzy.panel.DuplicateColPanel;
 import com.xzy.panel.TableMergePanel;
 import com.xzy.util.ExcelUtils;
 import com.xzy.util.SafeExport;
+import com.xzy.util.XlsxSheetReader;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.IOUtils;
-import org.apache.poi.xssf.eventusermodel.XSSFReader;
-import org.apache.poi.xssf.model.SharedStringsTable;
-import org.apache.poi.xssf.model.StylesTable;
 import org.apache.poi.xssf.streaming.SXSSFSheet;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.xml.sax.*;
-import org.xml.sax.helpers.DefaultHandler;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -627,214 +621,6 @@ public class ExcelTools {
         });
     }
 
-    /**
-     * SAX处理器，用于解析XLSX文件的表头，支持共享字符串
-     */
-    private static class HeaderHandler extends DefaultHandler {
-        private final List<String> headers = new ArrayList<>();
-        private final SharedStringsTable sst;
-        private boolean isHeaderRow = true;
-        private String cellType = null;
-        private StringBuilder currentValue = new StringBuilder();
-        private boolean isCellValue = false;
-
-        public HeaderHandler(SharedStringsTable sst) {
-            this.sst = sst;
-        }
-
-        @Override
-        public void startElement(String uri, String localName, String qName, Attributes attributes) {
-            if (isHeaderRow) {
-                if ("c".equals(qName)) {
-                    cellType = attributes.getValue("t");
-                    isCellValue = true;
-                }
-            }
-        }
-
-        @Override
-        public void characters(char[] ch, int start, int length) {
-            if (isCellValue) {
-                currentValue.append(ch, start, length);
-            }
-        }
-
-        @Override
-        public void endElement(String uri, String localName, String qName) {
-            if (isHeaderRow) {
-                if ("c".equals(qName)) {
-                    isCellValue = false;
-                    String value = currentValue.toString().trim();
-                    if (!value.isEmpty()) {
-                        if ("s".equals(cellType) && sst != null) {
-                            int idx = Integer.parseInt(value);
-                            value = sst.getItemAt(idx).getString();
-                        }
-                        headers.add(value);
-                    }
-                    currentValue.setLength(0);
-                    cellType = null;
-                } else if ("row".equals(qName)) {
-                    isHeaderRow = false;
-                }
-            }
-        }
-
-        public List<String> getHeaders() {
-            return headers;
-        }
-    }
-
-    /**
-     * SAX处理器，用于流式解析XLSX文件的全部数据（表头+数据行）
-     * 通过回调逐行处理，避免将全部数据加载到内存
-     */
-    private static class SheetDataHandler extends DefaultHandler {
-        private final SharedStringsTable sst;
-        private final List<CellStyle> cellStyles;
-        private final java.util.function.Consumer<List<String>> rowCallback;
-
-        private List<String> headers;
-        private boolean isFirstRow = true;
-        private String cellType = null;
-        private int cellStyleIndex = 0;
-        private int currentColIndex = 0;
-        private final TreeMap<Integer, String> currentRowData = new TreeMap<>();
-        private StringBuilder currentValue = new StringBuilder();
-        private boolean isCellValue = false;
-        private int totalRows = 0;
-
-        public SheetDataHandler(SharedStringsTable sst, List<CellStyle> cellStyles,
-                                java.util.function.Consumer<List<String>> rowCallback) {
-            this.sst = sst;
-            this.cellStyles = cellStyles;
-            this.rowCallback = rowCallback;
-        }
-
-        @Override
-        public void startElement(String uri, String localName, String qName, Attributes attributes) {
-            if ("c".equals(qName)) {
-                String ref = attributes.getValue("r");
-                if (ref != null) {
-                    currentColIndex = parseColumnRef(ref);
-                }
-                cellType = attributes.getValue("t");
-                String styleStr = attributes.getValue("s");
-                cellStyleIndex = (styleStr != null) ? Integer.parseInt(styleStr) : 0;
-                isCellValue = true;
-            }
-        }
-
-        @Override
-        public void characters(char[] ch, int start, int length) {
-            if (isCellValue) {
-                currentValue.append(ch, start, length);
-            }
-        }
-
-        @Override
-        public void endElement(String uri, String localName, String qName) {
-            if ("c".equals(qName)) {
-                isCellValue = false;
-                String value = currentValue.toString().trim();
-                if ("s".equals(cellType) && sst != null) {
-                    int idx = Integer.parseInt(value);
-                    value = sst.getItemAt(idx).getString();
-                } else if ("inlineStr".equals(cellType)) {
-                    // 内联字符串，直接使用
-                } else if (value != null && !value.isEmpty()) {
-                    // 数值类型，检查是否为日期
-                    if (cellStyleIndex > 0 && cellStyleIndex < cellStyles.size()) {
-                        CellStyle style = cellStyles.get(cellStyleIndex);
-                        if (style != null && DateUtil.isADateFormat(style.getDataFormat(), style.getDataFormatString())) {
-                            try {
-                                double excelDate = Double.parseDouble(value);
-                                // 统一使用无时区的中文常用格式，避免Date.toString()产生英文日期。
-                                value = ExcelUtils.formatExcelDate(excelDate);
-                            } catch (NumberFormatException ignored) {
-                            }
-                        }
-                    }
-                }
-                currentRowData.put(currentColIndex, (value != null) ? value : "");
-                currentValue.setLength(0);
-                cellType = null;
-                cellStyleIndex = 0;
-            } else if ("row".equals(qName)) {
-                totalRows++;
-                List<String> row = new ArrayList<>();
-                if (!currentRowData.isEmpty()) {
-                    int maxCol = currentRowData.lastKey();
-                    for (int i = 0; i <= maxCol; i++) {
-                        row.add(currentRowData.getOrDefault(i, ""));
-                    }
-                }
-                currentRowData.clear();
-
-                if (isFirstRow) {
-                    headers = row;
-                    isFirstRow = false;
-                } else {
-                    rowCallback.accept(row);
-                }
-            }
-        }
-
-        public List<String> getHeaders() {
-            return headers;
-        }
-
-        public int getTotalRows() {
-            return totalRows;
-        }
-
-        private int parseColumnRef(String ref) {
-            int col = 0;
-            for (int i = 0; i < ref.length(); i++) {
-                char c = ref.charAt(i);
-                if (c >= 'A' && c <= 'Z') {
-                    col = col * 26 + (c - 'A' + 1);
-                } else {
-                    break;
-                }
-            }
-            return col - 1;
-        }
-    }
-
-    /**
-     * 使用SAX流式解析XLSX文件，逐行处理数据，避免OOM
-     */
-    private static void processSheetDataWithSAX(File file, SharedStringsTable sst, List<CellStyle> cellStyles,
-                                          java.util.function.Consumer<List<String>> rowCallback) throws Exception {
-        try (FileInputStream fis = new FileInputStream(file);
-             OPCPackage pkg = OPCPackage.open(fis)) {
-            XSSFReader reader = new XSSFReader(pkg);
-            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
-
-            if (it.hasNext()) {
-                InputStream sheet = it.next();
-                try {
-                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
-                            .newSAXParser().getXMLReader();
-                    try {
-                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
-                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                        throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
-                    }
-
-                    SheetDataHandler handler = new SheetDataHandler(sst, cellStyles, rowCallback);
-                    parser.setContentHandler(handler);
-                    parser.parse(new InputSource(sheet));
-                } finally {
-                    sheet.close();
-                }
-            }
-        }
-    }
-
     private void loadHeaders(String inputFilePath, String templateFilePath) {
         // 创建进度对话框
         JDialog progressDialog = new JDialog(mainFrame, "加载表头", true);
@@ -866,7 +652,7 @@ public class ExcelTools {
                         progressLabel.setText("正在加载源数据文件表头...");
                     });
 
-                    List<String> sourceHeaders = ExcelUtils.readHeadersOnly(new File(inputFilePath));
+                    List<String> sourceHeaders = ExcelUtils.readNamedHeaders(new File(inputFilePath));
 
                     // 更新源数据表头列表
                     SwingUtilities.invokeLater(() -> {
@@ -882,7 +668,7 @@ public class ExcelTools {
                         progressLabel.setText("正在加载模板文件表头...");
                     });
 
-                    List<String> templateHeaders = ExcelUtils.readHeadersOnly(new File(templateFilePath));
+                    List<String> templateHeaders = ExcelUtils.readNamedHeaders(new File(templateFilePath));
 
                     // 更新模板表头列表
                     SwingUtilities.invokeLater(() -> {
@@ -954,27 +740,16 @@ public class ExcelTools {
     }
 
     private void loadMappingHeaders(File file, JList<String> sourceList, JList<String> targetList) {
-        try (FileInputStream fis = new FileInputStream(file)) {
-            // 使用XSSFWorkbook来处理大文件
-            Workbook workbook = new XSSFWorkbook(fis);
-            Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
-
+        try {
             DefaultListModel<String> sourceModel = new DefaultListModel<>();
             DefaultListModel<String> targetModel = new DefaultListModel<>();
-
-            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                Cell cell = headerRow.getCell(i);
-                if (cell != null) {
-                    String header = cell.getStringCellValue().trim();
-                    sourceModel.addElement(header);
-                    targetModel.addElement(header);
-                }
+            for (String header : ExcelUtils.readNamedHeaders(file)) {
+                sourceModel.addElement(header);
+                targetModel.addElement(header);
             }
 
             sourceList.setModel(sourceModel);
             targetList.setModel(targetModel);
-            workbook.close();
 
             statusLabel.setText("已加载 " + sourceModel.size() + " 个表头");
             log("成功加载表头: " + file.getName());
@@ -1016,18 +791,11 @@ public class ExcelTools {
             Sheet sheet = workbook.getSheetAt(0);
 
             // 获取表头索引
-            Map<String, Integer> headerIndexMap = new HashMap<>();
-            Row headerRow = sheet.getRow(0);
-            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                Cell cell = headerRow.getCell(i);
-                if (cell != null) {
-                    headerIndexMap.put(cell.getStringCellValue().trim(), i);
-                }
-            }
+            Map<String, Integer> headerIndexMap = indexNamedHeaders(ExcelUtils.readHeaderRow(sheet.getRow(0)));
 
             // 获取源字段和目标字段的索引
-            Integer sourceIndex = headerIndexMap.get(sourceField);
-            Integer targetIndex = headerIndexMap.get(targetField);
+            Integer sourceIndex = headerIndexMap.get(sourceField.trim());
+            Integer targetIndex = headerIndexMap.get(targetField.trim());
 
             if (sourceIndex == null || targetIndex == null) {
                 throw new IOException("找不到指定的字段");
@@ -1077,7 +845,7 @@ public class ExcelTools {
                 SwingWorker<List<String>, Void> worker = new SwingWorker<List<String>, Void>() {
                     @Override
                     protected List<String> doInBackground() throws Exception {
-                        return ExcelUtils.readHeadersOnly(currentTargetFile);
+                        return ExcelUtils.readNamedHeaders(currentTargetFile);
                     }
 
                     @Override
@@ -1189,65 +957,19 @@ public class ExcelTools {
     private static int[] processApplyMappingXlsx(File inputFile, File outputFile, String lookupField, String fillField,
                                                  Map<String, String> mappingRelations, Map<String, String> reverseMapping,
                                                  BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
-        // 先读取表头和共享字符串
-        List<String> headers;
-        SharedStringsTable sst;
-        List<CellStyle> cellStyles = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             OPCPackage pkg = OPCPackage.open(fis)) {
-            XSSFReader reader = new XSSFReader(pkg);
-            sst = (SharedStringsTable) reader.getSharedStringsTable();
-
-            try {
-                StylesTable stylesTable = reader.getStylesTable();
-                for (int i = 0; i < stylesTable.getNumCellStyles(); i++) {
-                    cellStyles.add(stylesTable.getStyleAt(i));
-                }
-            } catch (Exception e) {
-                logger.warn("无法读取样式表: " + e.getMessage());
-            }
-
-            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
-            if (it.hasNext()) {
-                InputStream sheet = it.next();
-                try {
-                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
-                            .newSAXParser().getXMLReader();
-                    try {
-                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
-                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                        throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
-                    }
-                    HeaderHandler handler = new HeaderHandler(sst);
-                    parser.setContentHandler(handler);
-                    parser.parse(new InputSource(sheet));
-                    headers = handler.getHeaders();
-                } finally {
-                    sheet.close();
-                }
-            } else {
-                throw new IOException("源文件中没有找到工作表");
-            }
-        }
+        List<String> headers = XlsxSheetReader.readHeaders(inputFile);
 
         // 获取查找字段和填充字段的索引
-        int lookupIndex = -1;
-        int fillIndex = -1;
-        for (int i = 0; i < headers.size(); i++) {
-            if (headers.get(i).trim().equals(lookupField)) lookupIndex = i;
-            if (headers.get(i).trim().equals(fillField)) fillIndex = i;
-        }
-        if (lookupIndex < 0 || fillIndex < 0) {
+        Map<String, Integer> indices = indexNamedHeaders(headers);
+        Integer lookupIndex = indices.get(lookupField);
+        Integer fillIndex = indices.get(fillField);
+        if (lookupIndex == null || fillIndex == null) {
             throw new IOException("找不到指定的字段: " + lookupField + " 或 " + fillField);
         }
 
         progress.accept(-1, "正在应用映射关系...");
         log.accept("开始应用映射关系（SAX流式模式）");
 
-        final int lkIdx = lookupIndex;
-        final int flIdx = fillIndex;
         final int[] stats = {0, 0}; // [processedRows, updatedCount]
         final int[] rowNum = {1};
 
@@ -1261,7 +983,7 @@ public class ExcelTools {
             }
 
             // SAX流式读取并逐行处理
-            processSheetDataWithSAX(inputFile, sst, cellStyles, sourceRow -> {
+            XlsxSheetReader.readDataRows(inputFile, sourceRow -> {
                 if (sourceRow.isEmpty()) return;
 
                 Row outRow = outputSheet.createRow(rowNum[0]++);
@@ -1275,17 +997,17 @@ public class ExcelTools {
                 }
 
                 // 获取查找字段的值并应用映射
-                if (lkIdx < sourceRow.size()) {
-                    String lookupValue = sourceRow.get(lkIdx);
+                if (lookupIndex < sourceRow.size()) {
+                    String lookupValue = sourceRow.get(lookupIndex);
                     if (lookupValue != null && !lookupValue.isEmpty()) {
                         String mappedValue = mappingRelations.get(lookupValue);
                         if (mappedValue == null) {
                             mappedValue = reverseMapping.get(lookupValue);
                         }
 
-                        Cell fillCell = outRow.getCell(flIdx);
+                        Cell fillCell = outRow.getCell(fillIndex);
                         if (fillCell == null) {
-                            fillCell = outRow.createCell(flIdx);
+                            fillCell = outRow.createCell(fillIndex);
                         }
 
                         if (mappedValue != null) {
@@ -1330,14 +1052,8 @@ public class ExcelTools {
 
             Sheet sheet = workbook.getSheetAt(0);
 
-            Map<String, Integer> headerIndexMap = new HashMap<>();
             Row headerRow = sheet.getRow(0);
-            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                Cell cell = headerRow.getCell(i);
-                if (cell != null) {
-                    headerIndexMap.put(cell.getStringCellValue().trim(), i);
-                }
-            }
+            Map<String, Integer> headerIndexMap = indexNamedHeaders(ExcelUtils.readHeaderRow(headerRow));
 
             Integer lookupIndex = headerIndexMap.get(lookupField);
             Integer fillIndex = headerIndexMap.get(fillField);
@@ -1505,25 +1221,21 @@ public class ExcelTools {
         }
     }
 
+    private static Map<String, Integer> indexNamedHeaders(List<String> headers) {
+        Map<String, Integer> indices = new HashMap<>();
+        for (int column = 0; column < headers.size(); column++) {
+            String name = headers.get(column);
+            if (!name.trim().isEmpty()) {
+                indices.put(name, column);
+            }
+        }
+        return indices;
+    }
+
     private static int writeProcessedExcel(File inputFile, File templateFile, File outputFile,
                                            Map<String, String> mappings, BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
         int totalProcessed;
-        // 读取模板文件的表头（模板文件通常较小，用POI读取即可）
-        List<String> templateHeaders;
-        try (FileInputStream templateFis = new FileInputStream(templateFile);
-             Workbook templateWorkbook = WorkbookFactory.create(templateFis)) {
-            Sheet templateSheet = templateWorkbook.getSheetAt(0);
-            templateHeaders = new ArrayList<>();
-            Row templateHeaderRow = templateSheet.getRow(0);
-            if (templateHeaderRow != null) {
-                for (int i = 0; i < templateHeaderRow.getLastCellNum(); i++) {
-                    Cell cell = templateHeaderRow.getCell(i);
-                    if (cell != null) {
-                        templateHeaders.add(cell.getStringCellValue());
-                    }
-                }
-            }
-        }
+        List<String> templateHeaders = ExcelUtils.readHeadersOnly(templateFile);
 
         // 将映射转换为HeaderMapping对象
         List<HeaderMapping> headerMappings = new ArrayList<>();
@@ -1536,10 +1248,7 @@ public class ExcelTools {
         }
 
         // 预建模板表头索引Map
-        Map<String, Integer> templateHeaderIndexMap = new HashMap<>();
-        for (int i = 0; i < templateHeaders.size(); i++) {
-            templateHeaderIndexMap.put(templateHeaders.get(i), i);
-        }
+        Map<String, Integer> templateHeaderIndexMap = indexNamedHeaders(templateHeaders);
 
         // 使用SXSSFWorkbook流式写入输出
         try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
@@ -1548,8 +1257,9 @@ public class ExcelTools {
             // 写入模板表头
             Row outputHeaderRow = outputSheet.createRow(0);
             for (int i = 0; i < templateHeaders.size(); i++) {
-                Cell cell = outputHeaderRow.createCell(i);
-                cell.setCellValue(templateHeaders.get(i));
+                if (!templateHeaders.get(i).isEmpty()) {
+                    outputHeaderRow.createCell(i).setCellValue(templateHeaders.get(i));
+                }
             }
 
             if (inputFile.getName().toLowerCase().endsWith(".xlsx")) {
@@ -1557,56 +1267,10 @@ public class ExcelTools {
                 progress.accept(-1, "正在使用SAX流式处理数据...");
                 log.accept("开始流式处理XLSX文件");
 
-                // 先读取表头和单元格样式
-                List<String> sourceHeaders;
-                SharedStringsTable sst;
-                List<CellStyle> cellStyles = new ArrayList<>();
-                try (FileInputStream fis = new FileInputStream(inputFile);
-                     OPCPackage pkg = OPCPackage.open(fis)) {
-                    XSSFReader reader = new XSSFReader(pkg);
-                    sst = (SharedStringsTable) reader.getSharedStringsTable();
-
-                    // 读取样式表
-                    try {
-                        StylesTable stylesTable = reader.getStylesTable();
-                        for (int i = 0; i < stylesTable.getNumCellStyles(); i++) {
-                            cellStyles.add(stylesTable.getStyleAt(i));
-                        }
-                    } catch (Exception e) {
-                        logger.warn("无法读取样式表: " + e.getMessage());
-                    }
-
-                    // 读取表头
-                    XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
-                    if (it.hasNext()) {
-                        InputStream sheet = it.next();
-                        try {
-                            XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
-                                    .newSAXParser().getXMLReader();
-                            try {
-                                parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-                                parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
-                                parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-                            } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                                throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
-                            }
-                            HeaderHandler handler = new HeaderHandler(sst);
-                            parser.setContentHandler(handler);
-                            parser.parse(new InputSource(sheet));
-                            sourceHeaders = handler.getHeaders();
-                        } finally {
-                            sheet.close();
-                        }
-                    } else {
-                        throw new IOException("源文件中没有找到工作表");
-                    }
-                }
+                List<String> sourceHeaders = XlsxSheetReader.readHeaders(inputFile);
 
                 // 构建源表头索引
-                Map<String, Integer> sourceHeaderMap = new LinkedHashMap<>();
-                for (int i = 0; i < sourceHeaders.size(); i++) {
-                    sourceHeaderMap.put(sourceHeaders.get(i), i);
-                }
+                Map<String, Integer> sourceHeaderMap = indexNamedHeaders(sourceHeaders);
 
                 log.accept("源表表头: " + sourceHeaders);
 
@@ -1614,7 +1278,7 @@ public class ExcelTools {
                 final int[] processedRows = {0};
                 final int[] rowNum = {1};
 
-                processSheetDataWithSAX(inputFile, sst, cellStyles, sourceRow -> {
+                XlsxSheetReader.readDataRows(inputFile, sourceRow -> {
                     if (sourceRow.isEmpty()) return;
 
                     Row outRow = outputSheet.createRow(rowNum[0]++);
@@ -1684,16 +1348,7 @@ public class ExcelTools {
                      Workbook workbook = WorkbookFactory.create(fis)) {
                     Sheet sheet = workbook.getSheetAt(0);
 
-                    Map<String, Integer> sourceHeaderMap = new LinkedHashMap<>();
-                    Row headerRow = sheet.getRow(0);
-                    if (headerRow != null) {
-                        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                            Cell cell = headerRow.getCell(i);
-                            if (cell != null) {
-                                sourceHeaderMap.put(cell.getStringCellValue(), i);
-                            }
-                        }
-                    }
+                    Map<String, Integer> sourceHeaderMap = indexNamedHeaders(ExcelUtils.readHeaderRow(sheet.getRow(0)));
 
                     int totalRows = sheet.getLastRowNum();
                     int processedRows = 0;

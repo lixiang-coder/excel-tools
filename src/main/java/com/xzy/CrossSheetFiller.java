@@ -358,7 +358,7 @@ public class CrossSheetFiller {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                java.util.List<String> headers = ExcelUtils.readHeadersOnly(new File(aPath.getText()));
+                                java.util.List<String> headers = ExcelUtils.readNamedHeaders(new File(aPath.getText()));
                                 SwingUtilities.invokeLater(() -> {
                                     aHeadersArea.setText(String.join(", ", headers));
                                     aKeyCombo.removeAllItems();
@@ -406,7 +406,7 @@ public class CrossSheetFiller {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                java.util.List<String> headers = ExcelUtils.readHeadersOnly(new File(bPath.getText()));
+                                java.util.List<String> headers = ExcelUtils.readNamedHeaders(new File(bPath.getText()));
                                 SwingUtilities.invokeLater(() -> {
                                     bHeadersArea.setText(String.join(", ", headers));
                                     bKeyCombo.removeAllItems();

@@ -10,6 +10,7 @@ import java.awt.*;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Tab6: 表格合并工具面板
@@ -239,7 +240,9 @@ public class TableMergePanel {
 
     private String rootMessage(Throwable throwable) {
         Throwable current = throwable;
-        while (current.getCause() != null) {
+        // 跳过后台任务包装，保留业务异常提供的源文件及单元格位置。
+        while (current.getCause() != null &&
+                (current instanceof ExecutionException || current.getClass() == RuntimeException.class)) {
             current = current.getCause();
         }
         return current.getMessage() == null ? current.toString() : current.getMessage();

@@ -217,7 +217,7 @@ public class DuplicateColumnMerger {
                         @Override
                         protected Void doInBackground() throws Exception {
                             try {
-                                headers = ExcelUtils.readHeadersOnly(new File(inputPath.getText()));
+                                headers = ExcelUtils.readNamedHeaders(new File(inputPath.getText()));
                             } catch (Exception ex) {
                                 headers = null;
                             }

@@ -2,13 +2,7 @@ package com.xzy.util;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
-import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.eventusermodel.XSSFReader;
-import org.apache.poi.xssf.model.SharedStringsTable;
-import org.xml.sax.*;
-import org.xml.sax.helpers.DefaultHandler;
 
 import java.io.*;
 import java.time.LocalDateTime;
@@ -80,11 +74,15 @@ public class ExcelUtils {
      * 纯日期不补零点时间；存在时间时按实际精度保留到分钟或秒。
      */
     public static String formatExcelDate(double excelDate) {
+        return formatExcelDate(excelDate, false);
+    }
+
+    public static String formatExcelDate(double excelDate, boolean use1904Windowing) {
         if (!DateUtil.isValidExcelDate(excelDate)) {
             return String.valueOf(excelDate);
         }
         // roundSeconds=true，避免Excel浮点误差将整分钟解析为上一秒的末尾。
-        return formatExcelDate(DateUtil.getLocalDateTime(excelDate, false, true));
+        return formatExcelDate(DateUtil.getLocalDateTime(excelDate, use1904Windowing, true));
     }
 
     private static String formatExcelDate(LocalDateTime dateTime) {
@@ -127,55 +125,19 @@ public class ExcelUtils {
         }
     }
 
-    /**
-     * 使用SAX模式只读取Excel文件的表头行
-     */
-    public static List<String> readHeadersOnly(File file) throws IOException {
-        if (file.getName().toLowerCase().endsWith(".xlsx")) {
-            return readXLSXHeaders(file);
-        } else {
-            return readXLSHeaders(file);
-        }
+    /** 界面按名称选择字段，不把空列当作可选项。 */
+    public static List<String> readNamedHeaders(File file) throws IOException {
+        List<String> names = new ArrayList<>(readHeadersOnly(file));
+        names.removeIf(name -> name.trim().isEmpty());
+        return names;
     }
 
-    /**
-     * 使用SAX模式读取XLSX文件的表头
-     */
-    private static List<String> readXLSXHeaders(File file) throws IOException {
-        List<String> headers = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(file);
-             OPCPackage pkg = OPCPackage.open(fis)) {
-            XSSFReader reader = new XSSFReader(pkg);
-            XSSFReader.SheetIterator it = (XSSFReader.SheetIterator) reader.getSheetsData();
-            SharedStringsTable sst = (SharedStringsTable) reader.getSharedStringsTable();
-
-            if (it.hasNext()) {
-                InputStream sheet = it.next();
-                try {
-                    XMLReader parser = javax.xml.parsers.SAXParserFactory.newInstance()
-                            .newSAXParser().getXMLReader();
-                    try {
-                        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-                        parser.setFeature("http://xml.org/sax/features/external-general-entities", false);
-                        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-                    } catch (SAXNotRecognizedException | SAXNotSupportedException e) {
-                        throw new RuntimeException("不安全的XML解析器，无法设置XXE防护", e);
-                    }
-
-                    HeaderHandler handler = new HeaderHandler(sst);
-                    parser.setContentHandler(handler);
-                    parser.parse(new InputSource(sheet));
-                    headers = handler.getHeaders();
-                } catch (SAXException e) {
-                    throw new IOException("解析Excel文件时出错: " + e.getMessage(), e);
-                } finally {
-                    sheet.close();
-                }
-            }
-        } catch (OpenXML4JException | javax.xml.parsers.ParserConfigurationException e) {
-            throw new IOException("打开Excel文件时出错: " + e.getMessage(), e);
+    /** 返回按物理列号排列的表头，空列使用空字符串占位。 */
+    public static List<String> readHeadersOnly(File file) throws IOException {
+        if (file.getName().toLowerCase().endsWith(".xlsx")) {
+            return XlsxSheetReader.readHeaders(file);
         }
-        return headers;
+        return readXLSHeaders(file);
     }
 
     /**
@@ -185,19 +147,18 @@ public class ExcelUtils {
         try (FileInputStream fis = new FileInputStream(file);
              Workbook workbook = WorkbookFactory.create(fis)) {
             Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
-
-            List<String> headers = new ArrayList<>();
-            if (headerRow != null) {
-                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                    Cell cell = headerRow.getCell(i);
-                    if (cell != null) {
-                        headers.add(cell.getStringCellValue().trim());
-                    }
-                }
-            }
-            return headers;
+            return readHeaderRow(sheet.getRow(0));
         }
+    }
+
+    public static List<String> readHeaderRow(Row row) {
+        List<String> headers = new ArrayList<>();
+        if (row != null) {
+            for (int i = 0; i < row.getLastCellNum(); i++) {
+                headers.add(getCellValueAsString(row.getCell(i)));
+            }
+        }
+        return headers;
     }
 
     /**
@@ -208,60 +169,4 @@ public class ExcelUtils {
         return s.replaceAll("\\s+", "").replace("﻿", "");
     }
 
-    /**
-     * SAX处理器，用于解析XLSX文件的表头，支持共享字符串
-     */
-    private static class HeaderHandler extends DefaultHandler {
-        private final List<String> headers = new ArrayList<>();
-        private final SharedStringsTable sst;
-        private boolean isHeaderRow = true;
-        private String cellType = null;
-        private StringBuilder currentValue = new StringBuilder();
-        private boolean isCellValue = false;
-
-        public HeaderHandler(SharedStringsTable sst) {
-            this.sst = sst;
-        }
-
-        @Override
-        public void startElement(String uri, String localName, String qName, Attributes attributes) {
-            if ("c".equals(qName)) {
-                cellType = attributes.getValue("t");
-                isCellValue = true;
-                currentValue.setLength(0);
-            }
-        }
-
-        @Override
-        public void characters(char[] ch, int start, int length) {
-            if (isCellValue) {
-                currentValue.append(ch, start, length);
-            }
-        }
-
-        @Override
-        public void endElement(String uri, String localName, String qName) {
-            if (!isHeaderRow) return;
-
-            if ("c".equals(qName)) {
-                String value = currentValue.toString().trim();
-                if ("s".equals(cellType)) {
-                    try {
-                        int idx = Integer.parseInt(value);
-                        value = sst.getItemAt(idx).getString();
-                    } catch (Exception e) {
-                        // 解析共享字符串失败，使用原始值
-                    }
-                }
-                headers.add(value);
-                isCellValue = false;
-            } else if ("row".equals(qName)) {
-                isHeaderRow = false;
-            }
-        }
-
-        public List<String> getHeaders() {
-            return headers;
-        }
-    }
 }
