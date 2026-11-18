@@ -1,6 +1,7 @@
 package com.xzy;
 
 import com.xzy.util.ExcelUtils;
+import com.xzy.util.SafeExport;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.poi.ss.usermodel.*;
@@ -39,68 +40,62 @@ public class DuplicateColumnMerger {
         if (!inputFile.exists() || !inputFile.canRead()) {
             throw new IOException("无法读取源文件: " + inputFilePath + "，请检查文件是否存在、权限是否正确，或是否被其他程序占用。");
         }
-        File outputDir = outputFile.getParentFile();
-        if (outputDir != null && !outputDir.exists()) {
-            if (!outputDir.mkdirs()) {
-                throw new IOException("无法创建输出目录: " + outputDir.getAbsolutePath() + "，请检查权限。");
-            }
-        }
-        if (outputDir != null && !outputDir.canWrite()) {
-            throw new IOException("无法写入输出目录: " + outputDir.getAbsolutePath() + "，请检查权限。");
-        }
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             Workbook workbook = WorkbookFactory.create(fis);
-             SXSSFWorkbook outputWorkbook = new SXSSFWorkbook();
-             FileOutputStream fos = new FileOutputStream(outputFile)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            if (sheet == null) throw new IOException("源文件没有数据，请检查文件内容。");
-            Row headerRow = sheet.getRow(0);
-            if (headerRow == null) throw new IOException("源文件没有表头，请检查文件格式。");
-            int colCount = headerRow.getLastCellNum();
-            int keyCol = -1;
-            java.util.List<String> headers = new java.util.ArrayList<>();
-            for (int i = 0; i < colCount; i++) {
-                Cell cell = headerRow.getCell(i);
-                String h = (cell != null) ? cell.getStringCellValue() : null;
-                headers.add(h);
-                if (keyColumn.equalsIgnoreCase(h)) keyCol = i;
-            }
-            if (keyCol == -1) throw new IOException("未找到重复列 '" + keyColumn + "'，请检查表头。");
-            Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
-                Row row = sheet.getRow(i);
-                if (row == null) continue;
-                Cell keyCell = row.getCell(keyCol);
-                String key = (keyCell != null) ? ExcelUtils.getCellValueAsString(keyCell) : null;
-                if (key == null || key.isEmpty()) continue;
-                java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(key, k -> {
-                    java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
-                    for (int j = 0; j < colCount; j++) l.add(new java.util.ArrayList<>());
-                    return l;
-                });
-                for (int j = 0; j < colCount; j++) {
-                    Cell cell = row.getCell(j);
-                    String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
-                    if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
+        try (SafeExport export = SafeExport.begin(outputFile, inputFile)) {
+            try (FileInputStream fis = new FileInputStream(inputFile);
+                 Workbook workbook = WorkbookFactory.create(fis);
+                 SXSSFWorkbook outputWorkbook = new SXSSFWorkbook();
+                 FileOutputStream fos = new FileOutputStream(export.temporaryFile())) {
+                Sheet sheet = workbook.getSheetAt(0);
+                if (sheet == null) throw new IOException("源文件没有数据，请检查文件内容。");
+                Row headerRow = sheet.getRow(0);
+                if (headerRow == null) throw new IOException("源文件没有表头，请检查文件格式。");
+                int colCount = headerRow.getLastCellNum();
+                int keyCol = -1;
+                java.util.List<String> headers = new java.util.ArrayList<>();
+                for (int i = 0; i < colCount; i++) {
+                    Cell cell = headerRow.getCell(i);
+                    String h = (cell != null) ? cell.getStringCellValue() : null;
+                    headers.add(h);
+                    if (keyColumn.equalsIgnoreCase(h)) keyCol = i;
                 }
-            }
-            Sheet outSheet = outputWorkbook.createSheet("Sheet1");
-            Row outHeader = outSheet.createRow(0);
-            for (int i = 0; i < headers.size(); i++) {
-                outHeader.createCell(i).setCellValue(headers.get(i));
-            }
-            int rowNum = 1;
-            for (Map.Entry<String, java.util.List<java.util.List<String>>> entry : merged.entrySet()) {
-                Row outRow = outSheet.createRow(rowNum++);
-                java.util.List<java.util.List<String>> colVals = entry.getValue();
-                for (int j = 0; j < colVals.size(); j++) {
-                    Set<String> uniq = new LinkedHashSet<>(colVals.get(j));
-                    String mergedVal = String.join(SEPARATOR, uniq);
-                    outRow.createCell(j).setCellValue(mergedVal);
+                if (keyCol == -1) throw new IOException("未找到重复列 '" + keyColumn + "'，请检查表头。");
+                Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
+                for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                    Row row = sheet.getRow(i);
+                    if (row == null) continue;
+                    Cell keyCell = row.getCell(keyCol);
+                    String key = (keyCell != null) ? ExcelUtils.getCellValueAsString(keyCell) : null;
+                    if (key == null || key.isEmpty()) continue;
+                    java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(key, k -> {
+                        java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
+                        for (int j = 0; j < colCount; j++) l.add(new java.util.ArrayList<>());
+                        return l;
+                    });
+                    for (int j = 0; j < colCount; j++) {
+                        Cell cell = row.getCell(j);
+                        String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
+                        if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
+                    }
                 }
+                Sheet outSheet = outputWorkbook.createSheet("Sheet1");
+                Row outHeader = outSheet.createRow(0);
+                for (int i = 0; i < headers.size(); i++) {
+                    outHeader.createCell(i).setCellValue(headers.get(i));
+                }
+                int rowNum = 1;
+                for (Map.Entry<String, java.util.List<java.util.List<String>>> entry : merged.entrySet()) {
+                    Row outRow = outSheet.createRow(rowNum++);
+                    java.util.List<java.util.List<String>> colVals = entry.getValue();
+                    for (int j = 0; j < colVals.size(); j++) {
+                        Set<String> uniq = new LinkedHashSet<>(colVals.get(j));
+                        String mergedVal = String.join(SEPARATOR, uniq);
+                        outRow.createCell(j).setCellValue(mergedVal);
+                    }
+                }
+                outputWorkbook.write(fos);
+                outputWorkbook.dispose();
             }
-            outputWorkbook.write(fos);
-            outputWorkbook.dispose();
+            export.commit();
         } catch (Exception e) {
             throw new IOException("处理Excel文件时发生错误: " + e.getMessage(), e);
         }
@@ -320,79 +315,73 @@ public class DuplicateColumnMerger {
         if (!inputFile.exists() || !inputFile.canRead()) {
             throw new IOException("无法读取源文件: " + inputFilePath);
         }
-        File outputDir = outputFile.getParentFile();
-        if (outputDir != null && !outputDir.exists()) {
-            if (!outputDir.mkdirs()) {
-                throw new IOException("无法创建输出目录: " + outputDir.getAbsolutePath());
-            }
-        }
-        if (outputDir != null && !outputDir.canWrite()) {
-            throw new IOException("无法写入输出目录: " + outputDir.getAbsolutePath());
-        }
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             Workbook workbook = WorkbookFactory.create(fis);
-             Workbook outputWorkbook = new SXSSFWorkbook(100);
-             FileOutputStream fos = new FileOutputStream(outputFile)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            if (sheet == null) throw new IOException("源文件没有数据");
-            Row headerRow = sheet.getRow(0);
-            if (headerRow == null) throw new IOException("源文件没有表头");
-            int colCount = headerRow.getLastCellNum();
-            int customerIdColIdx = -1;
-            java.util.List<Integer> mergeColIdxs = new java.util.ArrayList<>();
-            java.util.List<String> headers = new java.util.ArrayList<>();
-            for (int i = 0; i < colCount; i++) {
-                Cell cell = headerRow.getCell(i);
-                String h = (cell != null) ? cell.getStringCellValue() : null;
-                headers.add(h);
-                if (customerIdCol.equalsIgnoreCase(h)) customerIdColIdx = i;
-                if (mergeCols.contains(h)) mergeColIdxs.add(i);
-            }
-            if (customerIdColIdx == -1) throw new IOException("未找到CustomerId列");
-            Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
-            int totalRows = sheet.getLastRowNum();
-            for (int i = 1; i <= totalRows; i++) {
-                Row row = sheet.getRow(i);
-                if (row == null) continue;
-                Cell cidCell = row.getCell(customerIdColIdx);
-                String cid = (cidCell != null) ? ExcelUtils.getCellValueAsString(cidCell) : null;
-                if (cid == null || cid.isEmpty()) continue;
-                java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(cid, k -> {
-                    java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
-                    for (int j = 0; j < colCount; j++) l.add(new java.util.ArrayList<>());
-                    return l;
-                });
-                for (int j = 0; j < colCount; j++) {
-                    Cell cell = row.getCell(j);
-                    String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
-                    if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
+        try (SafeExport export = SafeExport.begin(outputFile, inputFile)) {
+            try (FileInputStream fis = new FileInputStream(inputFile);
+                 Workbook workbook = WorkbookFactory.create(fis);
+                 Workbook outputWorkbook = new SXSSFWorkbook(100);
+                 FileOutputStream fos = new FileOutputStream(export.temporaryFile())) {
+                Sheet sheet = workbook.getSheetAt(0);
+                if (sheet == null) throw new IOException("源文件没有数据");
+                Row headerRow = sheet.getRow(0);
+                if (headerRow == null) throw new IOException("源文件没有表头");
+                int colCount = headerRow.getLastCellNum();
+                int customerIdColIdx = -1;
+                java.util.List<Integer> mergeColIdxs = new java.util.ArrayList<>();
+                java.util.List<String> headers = new java.util.ArrayList<>();
+                for (int i = 0; i < colCount; i++) {
+                    Cell cell = headerRow.getCell(i);
+                    String h = (cell != null) ? cell.getStringCellValue() : null;
+                    headers.add(h);
+                    if (customerIdCol.equalsIgnoreCase(h)) customerIdColIdx = i;
+                    if (mergeCols.contains(h)) mergeColIdxs.add(i);
                 }
-                if (progressListener != null && (i % 100 == 0 || i == totalRows)) {
-                    progressListener.onProgress(i, totalRows);
-                }
-            }
-            Sheet outSheet = outputWorkbook.createSheet("Sheet1");
-            Row outHeader = outSheet.createRow(0);
-            for (int i = 0; i < headers.size(); i++) {
-                outHeader.createCell(i).setCellValue(headers.get(i));
-            }
-            int rowNum = 1;
-            for (Map.Entry<String, java.util.List<java.util.List<String>>> entry : merged.entrySet()) {
-                Row outRow = outSheet.createRow(rowNum++);
-                java.util.List<java.util.List<String>> colVals = entry.getValue();
-                for (int j = 0; j < colVals.size(); j++) {
-                    Set<String> uniq = new LinkedHashSet<>(colVals.get(j));
-                    String mergedVal;
-                    if (mergeColIdxs.contains(j)) {
-                        mergedVal = String.join(SEPARATOR, uniq);
-                    } else {
-                        mergedVal = uniq.isEmpty() ? "" : uniq.iterator().next();
+                if (customerIdColIdx == -1) throw new IOException("未找到CustomerId列");
+                Map<String, java.util.List<java.util.List<String>>> merged = new LinkedHashMap<>();
+                int totalRows = sheet.getLastRowNum();
+                for (int i = 1; i <= totalRows; i++) {
+                    Row row = sheet.getRow(i);
+                    if (row == null) continue;
+                    Cell cidCell = row.getCell(customerIdColIdx);
+                    String cid = (cidCell != null) ? ExcelUtils.getCellValueAsString(cidCell) : null;
+                    if (cid == null || cid.isEmpty()) continue;
+                    java.util.List<java.util.List<String>> colVals = merged.computeIfAbsent(cid, k -> {
+                        java.util.List<java.util.List<String>> l = new java.util.ArrayList<>();
+                        for (int j = 0; j < colCount; j++) l.add(new java.util.ArrayList<>());
+                        return l;
+                    });
+                    for (int j = 0; j < colCount; j++) {
+                        Cell cell = row.getCell(j);
+                        String v = (cell != null) ? ExcelUtils.getCellValueAsString(cell) : null;
+                        if (v != null && !v.trim().isEmpty()) colVals.get(j).add(v.trim());
                     }
-                    outRow.createCell(j).setCellValue(mergedVal);
+                    if (progressListener != null && (i % 100 == 0 || i == totalRows)) {
+                        progressListener.onProgress(i, totalRows);
+                    }
                 }
+                Sheet outSheet = outputWorkbook.createSheet("Sheet1");
+                Row outHeader = outSheet.createRow(0);
+                for (int i = 0; i < headers.size(); i++) {
+                    outHeader.createCell(i).setCellValue(headers.get(i));
+                }
+                int rowNum = 1;
+                for (Map.Entry<String, java.util.List<java.util.List<String>>> entry : merged.entrySet()) {
+                    Row outRow = outSheet.createRow(rowNum++);
+                    java.util.List<java.util.List<String>> colVals = entry.getValue();
+                    for (int j = 0; j < colVals.size(); j++) {
+                        Set<String> uniq = new LinkedHashSet<>(colVals.get(j));
+                        String mergedVal;
+                        if (mergeColIdxs.contains(j)) {
+                            mergedVal = String.join(SEPARATOR, uniq);
+                        } else {
+                            mergedVal = uniq.isEmpty() ? "" : uniq.iterator().next();
+                        }
+                        outRow.createCell(j).setCellValue(mergedVal);
+                    }
+                }
+                outputWorkbook.write(fos);
+                ((SXSSFWorkbook) outputWorkbook).dispose();
             }
-            outputWorkbook.write(fos);
-            ((SXSSFWorkbook) outputWorkbook).dispose();
+            export.commit();
         }
     }
 
