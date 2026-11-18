@@ -9,6 +9,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Excel工具类：公共方法提取
@@ -34,11 +36,7 @@ public class ExcelUtils {
                 if (DateUtil.isCellDateFormatted(cell)) {
                     return formatExcelDate(cell.getLocalDateTimeCellValue());
                 }
-                double value = cell.getNumericCellValue();
-                if (value == Math.floor(value)) {
-                    return String.format("%.0f", value);
-                }
-                return String.valueOf(value);
+                return numericText(cell.getNumericCellValue());
             case BOOLEAN:
                 return String.valueOf(cell.getBooleanCellValue());
             case FORMULA:
@@ -50,11 +48,7 @@ public class ExcelUtils {
                             if (DateUtil.isCellDateFormatted(cell)) {
                                 return formatExcelDate(cell.getLocalDateTimeCellValue());
                             }
-                            double formulaValue = cell.getNumericCellValue();
-                            if (formulaValue == Math.floor(formulaValue)) {
-                                return String.format("%.0f", formulaValue);
-                            }
-                            return String.valueOf(formulaValue);
+                            return numericText(cell.getNumericCellValue());
                         case BOOLEAN:
                             return String.valueOf(cell.getBooleanCellValue());
                         default:
@@ -67,6 +61,10 @@ public class ExcelUtils {
             default:
                 return "";
         }
+    }
+
+    static String numericText(double value) {
+        return value == Math.floor(value) ? String.format(Locale.ROOT, "%.0f", value) : String.valueOf(value);
     }
 
     /**
@@ -93,6 +91,18 @@ public class ExcelUtils {
             return DATE_TIME_MINUTE_FORMATTER.format(dateTime);
         }
         return DATE_TIME_SECOND_FORMATTER.format(dateTime);
+    }
+
+    /** 保留日期值及显示格式，同一输出工作簿按格式串复用样式。 */
+    public static void setDateCellValue(Cell target, LocalDateTime value, String format,
+                                       Map<String, CellStyle> dateStyles) {
+        target.setCellValue(value);
+        CellStyle style = dateStyles.computeIfAbsent(format, key -> {
+            CellStyle created = target.getSheet().getWorkbook().createCellStyle();
+            created.setDataFormat(target.getSheet().getWorkbook().createDataFormat().getFormat(key));
+            return created;
+        });
+        target.setCellStyle(style);
     }
 
     /**

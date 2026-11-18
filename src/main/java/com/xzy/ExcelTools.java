@@ -2,15 +2,18 @@ package com.xzy;
 
 import com.xzy.model.AppContext;
 import com.xzy.model.HeaderMapping;
+import com.xzy.model.MappingRelations;
 import com.xzy.model.ProgressDialog;
 import com.xzy.panel.CrossSheetPanel;
 import com.xzy.panel.DuplicateColPanel;
 import com.xzy.panel.TableMergePanel;
 import com.xzy.util.ExcelUtils;
+import com.xzy.util.FormulaCache;
 import com.xzy.util.SafeExport;
 import com.xzy.util.XlsxSheetReader;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.poi.ss.SpreadsheetVersion;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.streaming.SXSSFSheet;
@@ -50,10 +53,8 @@ public class ExcelTools {
     private JTabbedPane tabbedPane;
 
     // 表头映射工具相关组件
-    private Map<String, String> mappingRelations;  // 用于建立映射关系标签页
-    private final Set<File> mappingSourceFiles = new LinkedHashSet<>();
+    private final MappingRelations mappingRelations = new MappingRelations();
     private JList<String> mappingList;            // 用于建立映射关系标签页
-    private DefaultListModel<String> mappingListModel;  // 用于建立映射关系标签页
 
     // Excel处理器相关组件
     private DefaultListModel<String> sourceListModel;
@@ -79,7 +80,6 @@ public class ExcelTools {
 
     private void initializeUI() {
         // 初始化数据
-        mappingRelations = new HashMap<>();
         processorMappings = new HashMap<>();
         processorMappingOrder = new ArrayList<>();
 
@@ -289,8 +289,7 @@ public class ExcelTools {
         headerPanel.add(targetPanel);
 
         // 创建映射关系列表（可伸缩）
-        mappingListModel = new DefaultListModel<>();
-        mappingList = new JList<>(mappingListModel);
+        mappingList = new JList<>();
         JScrollPane mappingScrollPane = new JScrollPane(mappingList);
         mappingScrollPane.setBorder(BorderFactory.createTitledBorder("已保存的映射关系"));
 
@@ -308,8 +307,7 @@ public class ExcelTools {
         // 新增重置按钮事件
         resetButton.addActionListener(e -> {
             mappingRelations.clear();
-            mappingSourceFiles.clear();
-            mappingListModel.clear();
+            mappingList.setModel(new DefaultListModel<>());
             statusLabel.setText("已重置映射关系");
             log("已重置所有已保存的映射关系");
         });
@@ -764,27 +762,57 @@ public class ExcelTools {
     }
 
     private void saveMapping(File file, String sourceField, String targetField) {
-        try {
-            statusLabel.setText("正在处理映射关系...");
-            log("开始处理映射关系: " + file.getName());
-            int savedRelations = readMappingRelations(file, sourceField, targetField,
-                    mappingRelations, mappingSourceFiles);
-            mappingListModel.clear();
-            for (Map.Entry<String, String> entry : mappingRelations.entrySet()) {
-                mappingListModel.addElement(entry.getKey() + " -> " + entry.getValue());
+        ProgressDialog progress = ProgressDialog.create(mainFrame, "保存映射关系");
+        progress.dialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
+        progress.label.setText("正在读取关系表并检查冲突...");
+        SwingWorker<DefaultListModel<String>, Void> worker = new SwingWorker<DefaultListModel<String>, Void>() {
+            private int importedRows;
+            private int conflictGroups;
+
+            @Override
+            protected DefaultListModel<String> doInBackground() throws IOException {
+                importedRows = readMappingRelations(file, sourceField, targetField, mappingRelations);
+                DefaultListModel<String> rows = new DefaultListModel<>();
+                mappingRelations.forEachConflict((key, match) -> {
+                    conflictGroups++;
+                    String direction = match.isReverse() ? "反向" : "正向";
+                    rows.addElement("【" + direction + "冲突】查找值 " + key);
+                    match.getCandidates().forEach((candidate, origins) -> {
+                        for (MappingRelations.Origin origin : origins) {
+                            rows.addElement("    候选 " + candidate + "    " + origin.getFile().getPath()
+                                    + "，第 " + origin.getRowNumber() + " 行");
+                        }
+                    });
+                });
+                mappingRelations.forEachPair((source, target) -> rows.addElement(source + " → " + target));
+                return rows;
             }
-            statusLabel.setText("已保存 " + mappingRelations.size() + " 条映射关系");
-            log("处理完成，共保存 " + savedRelations + " 条映射关系");
-            log("成功保存映射关系: " + sourceField + " -> " + targetField);
-        } catch (IOException e) {
-            log("保存映射关系时出错: " + e.getMessage());
-            JOptionPane.showMessageDialog(mainFrame,
-                    "保存映射关系时出错: " + e.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
-        }
+
+            @Override
+            protected void done() {
+                progress.dialog.dispose();
+                try {
+                    mappingList.setModel(get());
+                    String summary = "已保存 " + mappingRelations.size() + " 条关系，"
+                            + (conflictGroups == 0 ? "无冲突" : conflictGroups + " 组冲突，详见列表顶部");
+                    statusLabel.setText(summary);
+                    log(file.getName() + " 读取 " + importedRows + " 行有效关系。" + summary);
+                } catch (Exception e) {
+                    String message = "保存映射关系失败：" + (e.getCause() == null ? e : e.getCause()).getMessage();
+                    statusLabel.setText(message);
+                    log(message);
+                    JOptionPane.showMessageDialog(mainFrame, message, "错误", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+        progress.dialog.setVisible(true);
     }
 
     static int readMappingRelations(File file, String sourceField, String targetField,
-                                    Map<String, String> mappingRelations, Set<File> sourceFiles) throws IOException {
+                                    MappingRelations mappingRelations) throws IOException {
+        MappingRelations imported = new MappingRelations();
+        int savedRelations = 0;
         try (FileInputStream fis = new FileInputStream(file);
              Workbook workbook = WorkbookFactory.create(fis)) {
 
@@ -803,8 +831,6 @@ public class ExcelTools {
 
             // 处理数据行
             final int totalRows = sheet.getLastRowNum();
-            int savedRelations = 0;
-
             for (int i = 1; i <= totalRows; i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
@@ -813,21 +839,30 @@ public class ExcelTools {
                 Cell targetCell = row.getCell(targetIndex);
 
                 if (sourceCell != null && targetCell != null) {
-                    String sourceValue = ExcelUtils.getCellValueAsString(sourceCell);
-                    String targetValue = ExcelUtils.getCellValueAsString(targetCell);
+                    String sourceValue = readMappingCellValue(file, sourceCell);
+                    String targetValue = readMappingCellValue(file, targetCell);
 
                     if (!sourceValue.isEmpty() && !targetValue.isEmpty()) {
-                        mappingRelations.put(sourceValue, targetValue);
-                        if (savedRelations == 0) {
-                            sourceFiles.add(file);
-                        }
+                        imported.add(sourceValue, targetValue, file, i + 1);
                         savedRelations++;
                     }
                 }
             }
 
-            return savedRelations;
         }
+        mappingRelations.addAll(imported);
+        return savedRelations;
+    }
+
+    private static String readMappingCellValue(File file, Cell cell) throws IOException {
+        if (cell.getCellType() == CellType.FORMULA) {
+            try {
+                FormulaCache.read(cell);
+            } catch (FormulaCache.FormulaCacheException e) {
+                throw e.inFile(file);
+            }
+        }
+        return ExcelUtils.getCellValueAsString(cell);
     }
 
     private void addApplyPanelEventHandlers(JButton uploadButton, JButton applyButton,
@@ -920,12 +955,14 @@ public class ExcelTools {
                 @Override
                 protected Void doInBackground() throws Exception {
                     int[] stats = exportAppliedMapping(file, outputFile, lookupField, fillField,
-                            mappingRelations, mappingSourceFiles,
+                            mappingRelations,
                             (percent, message) -> updateExportProgress(progressDialog, percent, message), ExcelTools.this::log);
                     SwingUtilities.invokeLater(() -> {
                         progressDialog.progressBar.setValue(100);
-                        statusLabel.setText("已更新 " + stats[1] + " 条记录");
-                        log("处理完成，共处理 " + stats[0] + " 行，更新 " + stats[1] + " 条记录");
+                        String summary = "已匹配更新 " + stats[1] + " 行"
+                                + (stats[2] == 0 ? "" : "，" + stats[2] + " 行因冲突保留原值，详见输出文件的“映射冲突”表");
+                        statusLabel.setText(summary);
+                        log("共处理 " + stats[0] + " 行。" + summary);
                     });
                     return null;
                 }
@@ -954,8 +991,8 @@ public class ExcelTools {
     /**
      * XLSX文件：SAX流式读取 + SXSSFWorkbook流式写入
      */
-    private static int[] processApplyMappingXlsx(File inputFile, File outputFile, String lookupField, String fillField,
-                                                 Map<String, String> mappingRelations, Map<String, String> reverseMapping,
+    private static int[] processApplyMappingXlsx(File inputFile, SXSSFWorkbook outputWorkbook, String lookupField, String fillField,
+                                                 MappingRelations mappingRelations,
                                                  BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
         List<String> headers = XlsxSheetReader.readHeaders(inputFile);
 
@@ -970,72 +1007,62 @@ public class ExcelTools {
         progress.accept(-1, "正在应用映射关系...");
         log.accept("开始应用映射关系（SAX流式模式）");
 
-        final int[] stats = {0, 0}; // [processedRows, updatedCount]
+        final int[] stats = {0, 0, 0}; // [processedRows, updatedCount, ambiguousRows]
         final int[] rowNum = {1};
 
-        try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
-            Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
+        Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
+        MappingConflictWriter conflicts = new MappingConflictWriter(outputWorkbook);
+        Map<String, CellStyle> preservedDateStyles = new HashMap<>();
 
-            // 写入表头
-            Row outputHeaderRow = outputSheet.createRow(0);
-            for (int i = 0; i < headers.size(); i++) {
-                outputHeaderRow.createCell(i).setCellValue(headers.get(i));
-            }
-
-            // SAX流式读取并逐行处理
-            XlsxSheetReader.readDataRows(inputFile, sourceRow -> {
-                if (sourceRow.isEmpty()) return;
-
-                Row outRow = outputSheet.createRow(rowNum[0]++);
-
-                // 复制所有单元格
-                for (int j = 0; j < sourceRow.size(); j++) {
-                    String val = sourceRow.get(j);
-                    if (val != null && !val.isEmpty()) {
-                        outRow.createCell(j).setCellValue(val);
-                    }
-                }
-
-                // 获取查找字段的值并应用映射
-                if (lookupIndex < sourceRow.size()) {
-                    String lookupValue = sourceRow.get(lookupIndex);
-                    if (lookupValue != null && !lookupValue.isEmpty()) {
-                        String mappedValue = mappingRelations.get(lookupValue);
-                        if (mappedValue == null) {
-                            mappedValue = reverseMapping.get(lookupValue);
-                        }
-
-                        Cell fillCell = outRow.getCell(fillIndex);
-                        if (fillCell == null) {
-                            fillCell = outRow.createCell(fillIndex);
-                        }
-
-                        if (mappedValue != null) {
-                            fillCell.setCellValue(mappedValue);
-                            stats[1]++;
-                        } else {
-                            fillCell.setCellValue(lookupValue);
-                        }
-                    }
-                }
-
-                stats[0]++;
-                if (stats[0] % BATCH_SIZE == 0) {
-                    try {
-                        ((SXSSFSheet) outputSheet).flushRows();
-                    } catch (IOException e) {
-                        throw new RuntimeException("刷新行数据失败", e);
-                    }
-                    final int processed = stats[0];
-                    progress.accept(Math.min(99, processed / 1000), "正在处理数据... 已处理 " + processed + " 行");
-                }
-            });
-
-            // 保存文件
-            try (FileOutputStream fos = new FileOutputStream(outputFile)) {
-                outputWorkbook.write(fos);
-            }
+        // 写入表头
+        Row outputHeaderRow = outputSheet.createRow(0);
+        for (int i = 0; i < headers.size(); i++) {
+            outputHeaderRow.createCell(i).setCellValue(headers.get(i));
         }
+
+        // SAX流式读取并逐行处理
+        XlsxSheetReader.readMappingRows(inputFile, lookupIndex, fillIndex, (sourceRowNumber, sourceRow, lookupKey, preservedCell) -> {
+            if (sourceRow.isEmpty()) return;
+
+            Row outRow = outputSheet.createRow(rowNum[0]++);
+
+            // 复制所有单元格
+            for (int j = 0; j < sourceRow.size(); j++) {
+                String val = sourceRow.get(j);
+                if (val != null && !val.isEmpty()) {
+                    outRow.createCell(j).setCellValue(val);
+                }
+            }
+
+            // 获取查找字段的值并应用映射
+            if (lookupKey != null) {
+                String lookupValue = sourceRow.get(lookupIndex);
+                if (!lookupValue.isEmpty()) {
+                    MappingRelations.Match match = mappingRelations.resolve(lookupKey);
+                    if (match.isAmbiguous()) {
+                        if (preservedCell != null) {
+                            Cell fillCell = outRow.getCell(fillIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                            preservedCell.writeTo(fillCell, preservedDateStyles);
+                        }
+                        conflicts.record(sourceRowNumber, lookupKey, match);
+                        stats[2]++;
+                    } else {
+                        writeMappingValue(outRow, fillIndex, lookupValue, match, stats);
+                    }
+                }
+            }
+
+            stats[0]++;
+            if (stats[0] % BATCH_SIZE == 0) {
+                try {
+                    ((SXSSFSheet) outputSheet).flushRows();
+                } catch (IOException e) {
+                    throw new RuntimeException("刷新行数据失败", e);
+                }
+                final int processed = stats[0];
+                progress.accept(Math.min(99, processed / 1000), "正在处理数据... 已处理 " + processed + " 行");
+            }
+        });
 
         return stats;
     }
@@ -1043,10 +1070,10 @@ public class ExcelTools {
     /**
      * XLS文件：POI读取 + SXSSFWorkbook写入
      */
-    private static int[] processApplyMappingXls(File inputFile, File outputFile, String lookupField, String fillField,
-                                                Map<String, String> mappingRelations, Map<String, String> reverseMapping,
+    private static int[] processApplyMappingXls(File inputFile, SXSSFWorkbook outputWorkbook, String lookupField, String fillField,
+                                                MappingRelations mappingRelations,
                                                 BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
-        int[] stats = {0, 0};
+        int[] stats = {0, 0, 0};
         try (FileInputStream fis = new FileInputStream(inputFile);
              Workbook workbook = WorkbookFactory.create(fis)) {
 
@@ -1064,76 +1091,140 @@ public class ExcelTools {
             progress.accept(-1, "正在应用映射关系...");
             log.accept("开始应用映射关系");
 
-            try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
-                Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
+            Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
+            MappingConflictWriter conflicts = new MappingConflictWriter(outputWorkbook);
+            Map<String, CellStyle> preservedDateStyles = new HashMap<>();
 
-                // 复制表头
-                Row outputHeaderRow = outputSheet.createRow(0);
-                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                    Cell cell = headerRow.getCell(i);
-                    if (cell != null) {
-                        Cell outputCell = outputHeaderRow.createCell(i);
-                        ExcelUtils.copyCellValue(cell, outputCell);
-                    }
+            // 复制表头
+            Row outputHeaderRow = outputSheet.createRow(0);
+            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                Cell cell = headerRow.getCell(i);
+                if (cell != null) {
+                    Cell outputCell = outputHeaderRow.createCell(i);
+                    ExcelUtils.copyCellValue(cell, outputCell);
                 }
+            }
 
-                final int totalRows = sheet.getLastRowNum();
-                int processedRows = 0;
-                int updatedCount = 0;
+            final int totalRows = sheet.getLastRowNum();
+            for (int i = 1; i <= totalRows; i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
 
-                for (int i = 1; i <= totalRows; i++) {
-                    Row row = sheet.getRow(i);
-                    if (row == null) continue;
+                Row outputRow = outputSheet.createRow(i);
+                Cell lookupCell = row.getCell(lookupIndex);
+                String lookupValue = lookupCell == null ? null : ExcelUtils.getCellValueAsString(lookupCell);
+                MappingRelations.Match match = lookupCell == null ? null : mappingRelations.resolve(lookupValue);
 
-                    Row outputRow = outputSheet.createRow(i);
-
-                    for (int j = 0; j < row.getLastCellNum(); j++) {
-                        Cell cell = row.getCell(j);
-                        if (cell != null) {
-                            Cell outputCell = outputRow.createCell(j);
+                for (int j = 0; j < row.getLastCellNum(); j++) {
+                    Cell cell = row.getCell(j);
+                    if (cell != null) {
+                        Cell outputCell = outputRow.createCell(j);
+                        if (j == fillIndex && match != null) {
+                            if (match.isAmbiguous()) {
+                                preserveMappingCell(cell, outputCell, preservedDateStyles);
+                            }
+                        } else {
                             ExcelUtils.copyCellValue(cell, outputCell);
                         }
                     }
+                }
 
-                    Cell lookupCell = row.getCell(lookupIndex);
-                    if (lookupCell != null) {
-                        String lookupValue = ExcelUtils.getCellValueAsString(lookupCell);
-
-                        Cell outputFillCell = outputRow.getCell(fillIndex);
-                        if (outputFillCell == null) {
-                            outputFillCell = outputRow.createCell(fillIndex);
-                        }
-
-                        String mappedValue = mappingRelations.get(lookupValue);
-                        if (mappedValue == null) {
-                            mappedValue = reverseMapping.get(lookupValue);
-                        }
-
-                        if (mappedValue != null) {
-                            outputFillCell.setCellValue(mappedValue);
-                            updatedCount++;
-                        } else {
-                            outputFillCell.setCellValue(lookupValue);
-                        }
-                    }
-
-                    processedRows++;
-                    if (processedRows % BATCH_SIZE == 0) {
-                        ((SXSSFSheet) outputSheet).flushRows();
-                        final int percent = Math.min(99, (int) ((i * 100.0) / totalRows));
-                        progress.accept(percent, "正在处理数据... " + percent + "%");
+                if (match != null) {
+                    if (match.isAmbiguous()) {
+                        conflicts.record(i + 1, lookupValue, match);
+                        stats[2]++;
+                    } else {
+                        writeMappingValue(outputRow, fillIndex, lookupValue, match, stats);
                     }
                 }
 
-                try (FileOutputStream fos = new FileOutputStream(outputFile)) {
-                    outputWorkbook.write(fos);
+                stats[0]++;
+                if (stats[0] % BATCH_SIZE == 0) {
+                    ((SXSSFSheet) outputSheet).flushRows();
+                    final int percent = Math.min(99, (int) ((i * 100.0) / totalRows));
+                    progress.accept(percent, "正在处理数据... " + percent + "%");
                 }
-
-                stats[0] = processedRows;
-                stats[1] = updatedCount;
             }
         }
         return stats;
+    }
+
+    private static void writeMappingValue(Row row, int fillIndex, String lookupValue,
+                                          MappingRelations.Match match, int[] stats) {
+        Cell cell = row.getCell(fillIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+        String mappedValue = match.getValue();
+        if (mappedValue == null) {
+            cell.setCellValue(lookupValue);
+        } else {
+            cell.setCellValue(mappedValue);
+            stats[1]++;
+        }
+    }
+
+    /** 冲突格采用源值或公式的已保存结果，避免复制公式后在新工作簿中重新计算。 */
+    private static void preserveMappingCell(Cell source, Cell target, Map<String, CellStyle> dateStyles) {
+        CellType type = source.getCellType() == CellType.FORMULA ? source.getCachedFormulaResultType() : source.getCellType();
+        target.setBlank();
+        switch (type) {
+            case STRING:
+                target.setCellValue(source.getStringCellValue());
+                break;
+            case BOOLEAN:
+                target.setCellValue(source.getBooleanCellValue());
+                break;
+            case ERROR:
+                target.setCellErrorValue(source.getErrorCellValue());
+                break;
+            case NUMERIC:
+                if (DateUtil.isCellDateFormatted(source)) {
+                    ExcelUtils.setDateCellValue(target, source.getLocalDateTimeCellValue(),
+                            source.getCellStyle().getDataFormatString(), dateStyles);
+                } else {
+                    target.setCellValue(source.getNumericCellValue());
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    private static final class MappingConflictWriter {
+        private final Workbook workbook;
+        private Sheet sheet;
+        private int sheetNumber;
+        private int rowNumber = 1;
+
+        private MappingConflictWriter(Workbook workbook) {
+            this.workbook = workbook;
+        }
+
+        private void record(int targetRowNumber, String lookupValue, MappingRelations.Match match) {
+            for (Map.Entry<String, List<MappingRelations.Origin>> candidate : match.getCandidates().entrySet()) {
+                for (MappingRelations.Origin origin : candidate.getValue()) {
+                    if (sheet == null || rowNumber > SpreadsheetVersion.EXCEL2007.getLastRowIndex()) {
+                        newSheet();
+                    }
+                    Row row = sheet.createRow(rowNumber++);
+                    row.createCell(0).setCellValue(targetRowNumber);
+                    row.createCell(1).setCellValue(lookupValue);
+                    row.createCell(2).setCellValue(match.isReverse() ? "反向" : "正向");
+                    row.createCell(3).setCellValue(candidate.getKey());
+                    row.createCell(4).setCellValue(origin.getFile().getAbsolutePath());
+                    row.createCell(5).setCellValue(origin.getRowNumber());
+                }
+            }
+        }
+
+        private void newSheet() {
+            sheetNumber++;
+            sheet = workbook.createSheet(sheetNumber == 1 ? "映射冲突" : "映射冲突" + sheetNumber);
+            rowNumber = 1;
+            Row header = sheet.createRow(0);
+            String[] columns = {"目标行号", "查找值", "匹配方向", "候选值", "关系文件", "关系行号"};
+            for (int i = 0; i < columns.length; i++) {
+                header.createCell(i).setCellValue(columns[i]);
+            }
+        }
     }
 
     private void processExcel(String inputFilePath, String templateFilePath, String outputFilePath,
@@ -1188,22 +1279,27 @@ public class ExcelTools {
     }
 
     static int[] exportAppliedMapping(File inputFile, File outputFile, String lookupField, String fillField,
-                                      Map<String, String> mappingRelations, Collection<File> mappingSources,
+                                      MappingRelations mappingRelations,
                                       BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
-        List<File> protectedInputs = new ArrayList<>(mappingSources);
+        List<File> protectedInputs = new ArrayList<>(mappingRelations.getSourceFiles());
         protectedInputs.add(inputFile);
         try (SafeExport export = SafeExport.begin(outputFile, protectedInputs.toArray(new File[0]))) {
-            Map<String, String> reverseMapping = new HashMap<>();
-            for (Map.Entry<String, String> entry : mappingRelations.entrySet()) {
-                reverseMapping.putIfAbsent(entry.getValue(), entry.getKey());
-            }
             int[] stats;
-            if (inputFile.getName().toLowerCase().endsWith(".xlsx")) {
-                stats = processApplyMappingXlsx(inputFile, export.temporaryFile(), lookupField, fillField,
-                        mappingRelations, reverseMapping, progress, log);
-            } else {
-                stats = processApplyMappingXls(inputFile, export.temporaryFile(), lookupField, fillField,
-                        mappingRelations, reverseMapping, progress, log);
+            try (SXSSFWorkbook workbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
+                try {
+                    if (inputFile.getName().toLowerCase().endsWith(".xlsx")) {
+                        stats = processApplyMappingXlsx(inputFile, workbook, lookupField, fillField,
+                                mappingRelations, progress, log);
+                    } else {
+                        stats = processApplyMappingXls(inputFile, workbook, lookupField, fillField,
+                                mappingRelations, progress, log);
+                    }
+                    try (FileOutputStream stream = new FileOutputStream(export.temporaryFile())) {
+                        workbook.write(stream);
+                    }
+                } finally {
+                    workbook.dispose();
+                }
             }
             export.commit();
             return stats;

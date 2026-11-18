@@ -1,5 +1,6 @@
 package com.xzy;
 
+import com.xzy.model.MappingRelations;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -23,7 +24,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -121,10 +121,12 @@ public class ExcelToolsExportTest {
         byte[] targetBefore = Files.readAllBytes(target.toPath());
         Set<String> before = directoryEntries();
 
+        MappingRelations relations = new MappingRelations();
+        relations.add("A", "Alpha", target, 2);
         int[] stats = ExcelTools.exportAppliedMapping(target, output, "Key", "Value",
-                Collections.singletonMap("A", "Alpha"), Collections.emptySet(), stillUnpublished(output), NO_LOG);
+                relations, stillUnpublished(output), NO_LOG);
 
-        assertArrayEquals(new int[]{2, 1}, stats);
+        assertArrayEquals(new int[]{2, 1, 0}, stats);
         assertEquals("Alpha", cell(output, 1, 1));
         assertEquals("missing", cell(output, 2, 1));
         assertArrayEquals(targetBefore, Files.readAllBytes(target.toPath()));
@@ -137,22 +139,21 @@ public class ExcelToolsExportTest {
         File firstMapping = workbook("first-mapping", new String[][]{{"From", "To"}, {"A", "Alpha"}});
         File secondMapping = workbook("second-mapping", new String[][]{{"From", "To"}, {"B", "Beta"}});
         File emptyMapping = workbook("empty-mapping", new String[][]{{"From", "To"}, {"", ""}});
-        Map<String, String> relations = new HashMap<>();
-        Set<File> mappingSources = new LinkedHashSet<>();
+        MappingRelations relations = new MappingRelations();
 
-        assertEquals(1, ExcelTools.readMappingRelations(firstMapping, "From", "To", relations, mappingSources));
-        assertEquals(1, ExcelTools.readMappingRelations(secondMapping, "From", "To", relations, mappingSources));
-        assertEquals(0, ExcelTools.readMappingRelations(emptyMapping, "From", "To", relations, mappingSources));
-        assertEquals(new HashSet<>(Arrays.asList(firstMapping, secondMapping)), mappingSources);
-        assertEquals("Alpha", relations.get("A"));
-        assertEquals("Beta", relations.get("B"));
+        assertEquals(1, ExcelTools.readMappingRelations(firstMapping, "From", "To", relations));
+        assertEquals(1, ExcelTools.readMappingRelations(secondMapping, "From", "To", relations));
+        assertEquals(0, ExcelTools.readMappingRelations(emptyMapping, "From", "To", relations));
+        assertEquals(new HashSet<>(Arrays.asList(firstMapping, secondMapping)), relations.getSourceFiles());
+        assertEquals("Alpha", relations.resolve("A").getValue());
+        assertEquals("Beta", relations.resolve("B").getValue());
         Set<String> before = directoryEntries();
 
         for (File protectedFile : Arrays.asList(target, firstMapping, secondMapping)) {
             byte[] original = Files.readAllBytes(protectedFile.toPath());
             for (File output : Arrays.asList(protectedFile, alias(protectedFile))) {
                 assertThrows(IOException.class, () -> ExcelTools.exportAppliedMapping(target, output, "Key", "Value",
-                        relations, mappingSources, NO_PROGRESS, NO_LOG));
+                        relations, NO_PROGRESS, NO_LOG));
                 assertArrayEquals(original, Files.readAllBytes(protectedFile.toPath()));
                 assertEquals(before, directoryEntries());
             }
@@ -165,12 +166,13 @@ public class ExcelToolsExportTest {
         byte[] targetBefore = Files.readAllBytes(target.toPath());
         File existing = existingOutput("existing.xlsx");
         File absent = new File(temporary.getRoot(), "absent.xlsx");
-        Map<String, String> relations = Collections.singletonMap("A", repeated('x', 32768));
+        MappingRelations relations = new MappingRelations();
+        relations.add("A", repeated('x', 32768), target, 2);
         Set<String> before = directoryEntries();
 
         for (File output : Arrays.asList(existing, absent)) {
             assertThrows(IllegalArgumentException.class, () -> ExcelTools.exportAppliedMapping(
-                    target, output, "Key", "Value", relations, Collections.emptySet(), NO_PROGRESS, NO_LOG));
+                    target, output, "Key", "Value", relations, NO_PROGRESS, NO_LOG));
             assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(existing.toPath()));
             assertFalse(absent.exists());
             assertArrayEquals(targetBefore, Files.readAllBytes(target.toPath()));
@@ -192,7 +194,7 @@ public class ExcelToolsExportTest {
         assertEquals(before, directoryEntries());
 
         assertThrows(Exception.class, () -> ExcelTools.exportAppliedMapping(source, output, "Key", "Value",
-                Collections.singletonMap("A", "Alpha"), Collections.emptySet(), NO_PROGRESS, NO_LOG));
+                new MappingRelations(), NO_PROGRESS, NO_LOG));
         assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(output.toPath()));
         assertEquals(before, directoryEntries());
     }

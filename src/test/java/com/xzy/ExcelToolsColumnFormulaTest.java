@@ -1,5 +1,6 @@
 package com.xzy;
 
+import com.xzy.model.MappingRelations;
 import com.xzy.util.ExcelUtils;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Cell;
@@ -186,10 +187,12 @@ public class ExcelToolsColumnFormulaTest {
         File output = new File(temporary.getRoot(), "applied.xlsx");
         byte[] before = Files.readAllBytes(source.toPath());
 
+        MappingRelations relations = new MappingRelations();
+        relations.add("lookup", "matched", source, 2);
         int[] stats = ExcelTools.exportAppliedMapping(source, output, "Key", "Value",
-                Collections.singletonMap("lookup", "matched"), Collections.emptySet(), NO_PROGRESS, NO_LOG);
+                relations, NO_PROGRESS, NO_LOG);
 
-        assertArrayEquals(new int[] {1, 1}, stats);
+        assertArrayEquals(new int[] {1, 1, 0}, stats);
         assertEquals("Value", cellText(output, 0, 2));
         assertEquals("", cellText(output, 0, 1));
         assertEquals("matched", cellText(output, 1, 2));
@@ -201,10 +204,12 @@ public class ExcelToolsColumnFormulaTest {
         File source = formulaWorkbook(name, formula, cache, STCellType.N);
         File output = new File(temporary.getRoot(), "applied.xlsx");
 
+        MappingRelations relations = new MappingRelations();
+        relations.add(cache, mapped, source, 2);
         int[] stats = ExcelTools.exportAppliedMapping(source, output, "Key", "Value",
-                Collections.singletonMap(cache, mapped), Collections.emptySet(), NO_PROGRESS, NO_LOG);
+                relations, NO_PROGRESS, NO_LOG);
 
-        assertArrayEquals(new int[] {1, 1}, stats);
+        assertArrayEquals(new int[] {1, 1, 0}, stats);
         assertEquals(cache, cellText(output, 1, 0));
         assertEquals(mapped, cellText(output, 1, 1));
     }
@@ -232,7 +237,7 @@ public class ExcelToolsColumnFormulaTest {
             Exception failure = assertThrows(Exception.class, () -> {
                 if (appliedMapping) {
                     ExcelTools.exportAppliedMapping(source, output, "Key", "Value",
-                            Collections.singletonMap("3", "three"), Collections.emptySet(), NO_PROGRESS, NO_LOG);
+                            new MappingRelations(), NO_PROGRESS, NO_LOG);
                 } else {
                     ExcelTools.exportProcessedExcel(source, template, output,
                             Collections.singletonMap("Key", "Result"), NO_PROGRESS, NO_LOG);

@@ -4,7 +4,10 @@ import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackageAccess;
 import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DateUtil;
+import org.apache.poi.ss.usermodel.FormulaError;
 import org.apache.poi.ss.util.CellReference;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
 import org.apache.poi.xssf.model.SharedStrings;
@@ -23,7 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /** 首个工作表的流式读取；表头和数据行使用相同的单元格位置及缓存值规则。 */
@@ -34,16 +37,69 @@ public final class XlsxSheetReader {
     /** 保留空列占位，读完首个实际存在的行即停止。 */
     public static List<String> readHeaders(File file) throws IOException {
         List<String> headers = new ArrayList<>();
-        read(file, true, headers::addAll);
+        read(file, true, -1, -1, (number, row, key, preservedCell) -> headers.addAll(row));
         return headers;
     }
 
     /** 跳过表头后逐行回调，不把整个工作表的数据保存在内存中。 */
     public static void readDataRows(File file, Consumer<List<String>> rowConsumer) throws IOException {
-        read(file, false, rowConsumer);
+        read(file, false, -1, -1, (number, row, key, preservedCell) -> rowConsumer.accept(row));
     }
 
-    private static void read(File file, boolean headersOnly, Consumer<List<String>> rowConsumer) throws IOException {
+    /** 应用映射时同时提供实际行号、与关系表一致的查找键和填充列原值。 */
+    public static void readMappingRows(File file, int lookupColumn, int fillColumn,
+                                       MappingRowConsumer rowConsumer) throws IOException {
+        read(file, false, lookupColumn, fillColumn, rowConsumer);
+    }
+
+    @FunctionalInterface
+    public interface MappingRowConsumer {
+        void accept(int rowNumber, List<String> row, String lookupKey, PreservedCell preservedCell);
+    }
+
+    /** 原单元格或公式缓存的标量，用于需要跳过修改的目标格。 */
+    public static final class PreservedCell {
+        private final CellType type;
+        private final String value;
+        private final String dateFormat;
+        private final boolean date1904;
+
+        private PreservedCell(CellType type, String value, String dateFormat, boolean date1904) {
+            this.type = type;
+            this.value = value;
+            this.dateFormat = dateFormat;
+            this.date1904 = date1904;
+        }
+
+        public void writeTo(Cell target, Map<String, CellStyle> dateStyles) {
+            target.setBlank();
+            switch (type) {
+                case STRING:
+                    target.setCellValue(value);
+                    break;
+                case BOOLEAN:
+                    target.setCellValue("1".equals(value) || "true".equalsIgnoreCase(value));
+                    break;
+                case ERROR:
+                    target.setCellErrorValue(FormulaError.forString(value).getCode());
+                    break;
+                case NUMERIC:
+                    double number = Double.parseDouble(value);
+                    if (dateFormat == null) {
+                        target.setCellValue(number);
+                    } else {
+                        ExcelUtils.setDateCellValue(target, DateUtil.getLocalDateTime(number, date1904),
+                                dateFormat, dateStyles);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    private static void read(File file, boolean headersOnly, int lookupColumn, int preservedColumn,
+                             MappingRowConsumer rowConsumer) throws IOException {
         try (OPCPackage pkg = OPCPackage.open(file, PackageAccess.READ)) {
             XSSFReader reader = new XSSFReader(pkg);
             SharedStrings strings = reader.getSharedStringsTable();
@@ -55,7 +111,7 @@ public final class XlsxSheetReader {
             }
             try (InputStream sheet = sheets.next()) {
                 SheetHandler handler = new SheetHandler(file, sheets.getSheetName(), strings, styles,
-                        date1904, headersOnly, rowConsumer);
+                        date1904, headersOnly, lookupColumn, preservedColumn, rowConsumer);
                 XMLReader parser = secureParser();
                 parser.setContentHandler(handler);
                 try {
@@ -113,7 +169,9 @@ public final class XlsxSheetReader {
         private final byte[] dateStyles;
         private final boolean date1904;
         private final boolean headersOnly;
-        private final Consumer<List<String>> rowConsumer;
+        private final int lookupColumn;
+        private final int preservedColumn;
+        private final MappingRowConsumer rowConsumer;
         private final StringBuilder value = new StringBuilder();
         private List<String> row = new ArrayList<>();
         private boolean firstRow = true;
@@ -130,9 +188,12 @@ public final class XlsxSheetReader {
         private int phoneticDepth;
         private boolean formula;
         private boolean valuePresent;
+        private PreservedCell preservedCell;
+        private String lookupKey;
 
         private SheetHandler(File file, String sheetName, SharedStrings strings, StylesTable styles,
-                             boolean date1904, boolean headersOnly, Consumer<List<String>> rowConsumer) {
+                             boolean date1904, boolean headersOnly, int lookupColumn, int preservedColumn,
+                             MappingRowConsumer rowConsumer) {
             this.file = file;
             this.sheetName = sheetName;
             this.strings = strings;
@@ -140,6 +201,8 @@ public final class XlsxSheetReader {
             this.dateStyles = new byte[styles == null ? 0 : styles.getNumCellStyles()];
             this.date1904 = date1904;
             this.headersOnly = headersOnly;
+            this.lookupColumn = lookupColumn;
+            this.preservedColumn = preservedColumn;
             this.rowConsumer = rowConsumer;
         }
 
@@ -147,6 +210,8 @@ public final class XlsxSheetReader {
         public void startElement(String uri, String name, String qName, Attributes attributes) throws SAXException {
             if ("row".equals(name)) {
                 row = new ArrayList<>();
+                preservedCell = null;
+                lookupKey = null;
                 nextColumn = 0;
                 String index = attributes.getValue("r");
                 rowNumber = index == null ? rowNumber + 1 : integer(index, "行号");
@@ -200,17 +265,24 @@ public final class XlsxSheetReader {
                 while (row.size() <= column) {
                     row.add("");
                 }
-                row.set(column, cellValue());
+                String decoded = cellValue();
+                row.set(column, decoded);
+                if (column == lookupColumn && !firstRow) {
+                    lookupKey = lookupKey(decoded);
+                }
+                if (column == preservedColumn) {
+                    preservedCell = preservedCellValue(decoded);
+                }
                 inCell = false;
             } else if ("row".equals(name)) {
                 if (firstRow) {
                     firstRow = false;
                     if (headersOnly) {
-                        rowConsumer.accept(row);
+                        rowConsumer.accept(rowNumber, row, lookupKey, preservedCell);
                         throw new HeaderComplete();
                     }
                 } else {
-                    rowConsumer.accept(row);
+                    rowConsumer.accept(rowNumber, row, lookupKey, preservedCell);
                 }
             } else if ("v".equals(name)) {
                 inValue = false;
@@ -221,6 +293,43 @@ public final class XlsxSheetReader {
             } else if ("rPh".equals(name)) {
                 phoneticDepth--;
             }
+        }
+
+        // 与 WorkbookFactory 读取关系表时的值表示一致，同时保留原行文本供正常导出。
+        private String lookupKey(String decoded) throws SAXException {
+            if ("b".equals(type)) {
+                return String.valueOf("1".equals(decoded) || "true".equalsIgnoreCase(decoded));
+            }
+            if (!formula && !decoded.isEmpty() && (type == null || "n".equals(type)) && !isDateStyle()) {
+                try {
+                    return ExcelUtils.numericText(Double.parseDouble(decoded));
+                } catch (NumberFormatException e) {
+                    throw cellError("无效的查找列数值: " + decoded);
+                }
+            }
+            return decoded.trim();
+        }
+
+        private PreservedCell preservedCellValue(String decoded) {
+            String exact = value.toString();
+            if ("s".equals(type)) {
+                return new PreservedCell(CellType.STRING, decoded, null, date1904);
+            }
+            if ("inlineStr".equals(type) || "str".equals(type) || "d".equals(type)) {
+                return new PreservedCell(CellType.STRING, exact, null, date1904);
+            }
+            String raw = exact.trim();
+            if (raw.isEmpty()) {
+                return new PreservedCell(CellType.BLANK, "", null, date1904);
+            }
+            if ("b".equals(type)) {
+                return new PreservedCell(CellType.BOOLEAN, raw, null, date1904);
+            }
+            if ("e".equals(type)) {
+                return new PreservedCell(CellType.ERROR, raw, null, date1904);
+            }
+            String format = isDateStyle() ? styles.getStyleAt(styleIndex).getDataFormatString() : null;
+            return new PreservedCell(CellType.NUMERIC, raw, format, date1904);
         }
 
         private String cellValue() throws SAXException {
@@ -263,8 +372,7 @@ public final class XlsxSheetReader {
             if (formula) {
                 try {
                     double number = Double.parseDouble(raw);
-                    return number == Math.floor(number) ? String.format(Locale.ROOT, "%.0f", number)
-                            : String.valueOf(number);
+                    return ExcelUtils.numericText(number);
                 } catch (NumberFormatException e) {
                     throw cellError("无效的公式数值缓存: " + raw);
                 }
