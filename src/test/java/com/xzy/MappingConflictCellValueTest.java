@@ -157,6 +157,33 @@ public class MappingConflictCellValueTest {
         }
     }
 
+    @Test
+    public void replacesExistingInlineTextForBothMatchedAndUnmatchedRows() throws Exception {
+        File input = temporary.newFile("inline-fill.xlsx");
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook()) {
+            try {
+                Sheet sheet = newTarget(workbook);
+                fillCell(sheet, 1).setCellValue("旧值一");
+                fillCell(sheet, 2).setCellValue("旧值二");
+                sheet.getRow(2).getCell(0).setCellValue("missing");
+                try (FileOutputStream stream = new FileOutputStream(input)) { workbook.write(stream); }
+            } finally {
+                workbook.dispose();
+            }
+        }
+        MappingRelations relations = new MappingRelations();
+        relations.add("A", "甲", input, 2);
+        File output = new File(temporary.getRoot(), "filled.xlsx");
+        int[] stats = ExcelTools.exportAppliedMapping(input, output, "Key", "Value", relations,
+                (percent, message) -> { }, message -> { });
+        assertArrayEquals(new int[]{2, 1, 0}, stats);
+        try (Workbook saved = WorkbookFactory.create(output, null, true)) {
+            Sheet sheet = saved.getSheetAt(0);
+            assertEquals("甲", sheet.getRow(1).getCell(1).getStringCellValue());
+            assertEquals("missing", sheet.getRow(2).getCell(1).getStringCellValue());
+        }
+    }
+
     private Sheet newTarget(Workbook workbook) {
         Sheet sheet = workbook.createSheet();
         Row header = sheet.createRow(0);

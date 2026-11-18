@@ -9,15 +9,20 @@ import com.xzy.panel.DuplicateColPanel;
 import com.xzy.panel.TableMergePanel;
 import com.xzy.util.ExcelUtils;
 import com.xzy.util.FormulaCache;
+import com.xzy.util.LegacyWorkbookConverter;
 import com.xzy.util.SafeExport;
 import com.xzy.util.XlsxSheetReader;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.poi.ss.SpreadsheetVersion;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.util.IOUtils;
 import org.apache.poi.xssf.streaming.SXSSFSheet;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.xssf.usermodel.XSSFCell;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTWorkbook;
 
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -937,16 +942,25 @@ public class ExcelTools {
             return;
         }
 
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-        fileChooser.setDialogTitle("选择最终文件的保存位置");
+        boolean legacy = file.getName().toLowerCase(Locale.ROOT).endsWith(".xls");
+        JFileChooser fileChooser = new JFileChooser(file.getAbsoluteFile().getParentFile());
+        fileChooser.setAcceptAllFileFilterUsed(false);
+        fileChooser.setFileFilter(legacy
+                ? new FileNameExtensionFilter("Excel 工作簿 (*.xls, *.xlsx)", "xls", "xlsx")
+                : new FileNameExtensionFilter("Excel 工作簿 (*.xlsx)", "xlsx"));
+        String name = file.getName();
+        int dot = name.lastIndexOf('.');
+        String basename = dot > 0 ? name.substring(0, dot) : name;
+        fileChooser.setSelectedFile(new File(file.getAbsoluteFile().getParentFile(),
+                basename + "-已填充" + (legacy ? ".xls" : ".xlsx")));
+        fileChooser.setDialogTitle("保存应用映射后的工作簿");
 
         int result = fileChooser.showSaveDialog(mainFrame);
         if (result == JFileChooser.APPROVE_OPTION) {
-            File outputFile = new File(
-                    fileChooser.getSelectedFile().getAbsolutePath() +
-                            (!fileChooser.getSelectedFile().getName().toLowerCase().endsWith(".xlsx") ? ".xlsx" : "")
-            );
+            File chosen = fileChooser.getSelectedFile();
+            String suffix = chosen.getName().toLowerCase(Locale.ROOT);
+            File outputFile = suffix.endsWith(".xls") || suffix.endsWith(".xlsx")
+                    ? chosen : new File(chosen.getPath() + (legacy ? ".xls" : ".xlsx"));
 
             ProgressDialog progressDialog = ProgressDialog.create(mainFrame,"处理中");
 
@@ -960,7 +974,7 @@ public class ExcelTools {
                     SwingUtilities.invokeLater(() -> {
                         progressDialog.progressBar.setValue(100);
                         String summary = "已匹配更新 " + stats[1] + " 行"
-                                + (stats[2] == 0 ? "" : "，" + stats[2] + " 行因冲突保留原值，详见输出文件的“映射冲突”表");
+                                + (stats[2] == 0 ? "" : "，" + stats[2] + " 行因冲突保留原值，详见输出文件末尾新增的映射冲突表");
                         statusLabel.setText(summary);
                         log("共处理 " + stats[0] + " 行。" + summary);
                     });
@@ -988,203 +1002,129 @@ public class ExcelTools {
         }
     }
 
-    /**
-     * XLSX文件：SAX流式读取 + SXSSFWorkbook流式写入
-     */
-    private static int[] processApplyMappingXlsx(File inputFile, SXSSFWorkbook outputWorkbook, String lookupField, String fillField,
-                                                 MappingRelations mappingRelations,
-                                                 BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
-        List<String> headers = XlsxSheetReader.readHeaders(inputFile);
-
-        // 获取查找字段和填充字段的索引
-        Map<String, Integer> indices = indexNamedHeaders(headers);
-        Integer lookupIndex = indices.get(lookupField);
-        Integer fillIndex = indices.get(fillField);
-        if (lookupIndex == null || fillIndex == null) {
-            throw new IOException("找不到指定的字段: " + lookupField + " 或 " + fillField);
+    private static int[] applyToWorkbook(File file, Workbook workbook, String lookupField, String fillField,
+                                         MappingRelations relations, BiConsumer<Integer, String> progress,
+                                         Consumer<String> log) throws IOException {
+        if (workbook.getNumberOfSheets() == 0) {
+            throw new IOException("目标文件中没有工作表：" + file.getName());
+        }
+        Sheet sheet = workbook.getSheetAt(0);
+        boolean xlsx = !(workbook instanceof HSSFWorkbook);
+        int headerRow = xlsx ? sheet.getFirstRowNum() : 0;
+        Map<String, Integer> indices = new HashMap<>();
+        Row header = headerRow < 0 ? null : sheet.getRow(headerRow);
+        if (header != null) {
+            for (Cell cell : header) {
+                String name = readMappingCellValue(file, cell);
+                if (cell instanceof XSSFCell) name = xlsxLookupText((XSSFCell) cell, name);
+                if (name != null && !name.trim().isEmpty()) indices.put(name, cell.getColumnIndex());
+            }
+        }
+        Integer lookup = indices.get(lookupField);
+        Integer fill = indices.get(fillField);
+        if (lookup == null || fill == null) {
+            throw new IOException("找不到指定的字段：" + lookupField + " 或 " + fillField);
         }
 
         progress.accept(-1, "正在应用映射关系...");
-        log.accept("开始应用映射关系（SAX流式模式）");
-
-        final int[] stats = {0, 0, 0}; // [processedRows, updatedCount, ambiguousRows]
-        final int[] rowNum = {1};
-
-        Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
-        MappingConflictWriter conflicts = new MappingConflictWriter(outputWorkbook);
-        Map<String, CellStyle> preservedDateStyles = new HashMap<>();
-
-        // 写入表头
-        Row outputHeaderRow = outputSheet.createRow(0);
-        for (int i = 0; i < headers.size(); i++) {
-            outputHeaderRow.createCell(i).setCellValue(headers.get(i));
+        log.accept("正在处理工作表：" + sheet.getSheetName());
+        MappingConflictWriter conflicts = new MappingConflictWriter(workbook);
+        List<CellRangeAddress> merged = new ArrayList<>();
+        for (CellRangeAddress region : sheet.getMergedRegions()) {
+            if (region.getFirstColumn() <= fill && fill <= region.getLastColumn()) merged.add(region);
         }
-
-        // SAX流式读取并逐行处理
-        XlsxSheetReader.readMappingRows(inputFile, lookupIndex, fillIndex, (sourceRowNumber, sourceRow, lookupKey, preservedCell) -> {
-            if (sourceRow.isEmpty()) return;
-
-            Row outRow = outputSheet.createRow(rowNum[0]++);
-
-            // 复制所有单元格
-            for (int j = 0; j < sourceRow.size(); j++) {
-                String val = sourceRow.get(j);
-                if (val != null && !val.isEmpty()) {
-                    outRow.createCell(j).setCellValue(val);
-                }
-            }
-
-            // 获取查找字段的值并应用映射
-            if (lookupKey != null) {
-                String lookupValue = sourceRow.get(lookupIndex);
-                if (!lookupValue.isEmpty()) {
-                    MappingRelations.Match match = mappingRelations.resolve(lookupKey);
-                    if (match.isAmbiguous()) {
-                        if (preservedCell != null) {
-                            Cell fillCell = outRow.getCell(fillIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-                            preservedCell.writeTo(fillCell, preservedDateStyles);
-                        }
-                        conflicts.record(sourceRowNumber, lookupKey, match);
-                        stats[2]++;
-                    } else {
-                        writeMappingValue(outRow, fillIndex, lookupValue, match, stats);
-                    }
-                }
-            }
-
+        merged.sort(Comparator.comparingInt(CellRangeAddress::getFirstRow));
+        int regionIndex = 0;
+        boolean filled = false;
+        int[] stats = new int[3]; // 处理行、匹配更新行、冲突行
+        for (Row row : sheet) {
+            int index = row.getRowNum();
+            if (index <= headerRow || (xlsx && row.getPhysicalNumberOfCells() == 0)) continue;
             stats[0]++;
             if (stats[0] % BATCH_SIZE == 0) {
-                try {
-                    ((SXSSFSheet) outputSheet).flushRows();
-                } catch (IOException e) {
-                    throw new RuntimeException("刷新行数据失败", e);
+                progress.accept(Math.min(99, (int) (index * 100.0 / sheet.getLastRowNum())), "已处理 " + stats[0] + " 行");
+            }
+            Cell key = row.getCell(lookup);
+            if (key == null) continue;
+            String lookupKey = readMappingCellValue(file, key);
+            String fallback = lookupKey;
+            if (key instanceof XSSFCell) {
+                fallback = xlsxLookupText((XSSFCell) key, lookupKey);
+                if (fallback == null || fallback.isEmpty()) continue;
+                if (lookupKey.isEmpty()) lookupKey = fallback.trim();
+            }
+            MappingRelations.Match match = relations.resolve(lookupKey);
+            Cell cell = row.getCell(fill);
+            if (match.isAmbiguous()) {
+                if (cell != null && cell.getCellType() == CellType.FORMULA) {
+                    freezeMappingFormula(file, cell);
                 }
-                final int processed = stats[0];
-                progress.accept(Math.min(99, processed / 1000), "正在处理数据... 已处理 " + processed + " 行");
+                conflicts.record(index + 1, lookupKey, match);
+                stats[2]++;
+                continue;
             }
-        });
-
-        return stats;
-    }
-
-    /**
-     * XLS文件：POI读取 + SXSSFWorkbook写入
-     */
-    private static int[] processApplyMappingXls(File inputFile, SXSSFWorkbook outputWorkbook, String lookupField, String fillField,
-                                                MappingRelations mappingRelations,
-                                                BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
-        int[] stats = {0, 0, 0};
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             Workbook workbook = WorkbookFactory.create(fis)) {
-
-            Sheet sheet = workbook.getSheetAt(0);
-
-            Row headerRow = sheet.getRow(0);
-            Map<String, Integer> headerIndexMap = indexNamedHeaders(ExcelUtils.readHeaderRow(headerRow));
-
-            Integer lookupIndex = headerIndexMap.get(lookupField);
-            Integer fillIndex = headerIndexMap.get(fillField);
-            if (lookupIndex == null || fillIndex == null) {
-                throw new IOException("找不到指定的字段");
-            }
-
-            progress.accept(-1, "正在应用映射关系...");
-            log.accept("开始应用映射关系");
-
-            Sheet outputSheet = outputWorkbook.createSheet("Sheet1");
-            MappingConflictWriter conflicts = new MappingConflictWriter(outputWorkbook);
-            Map<String, CellStyle> preservedDateStyles = new HashMap<>();
-
-            // 复制表头
-            Row outputHeaderRow = outputSheet.createRow(0);
-            for (int i = 0; i < headerRow.getLastCellNum(); i++) {
-                Cell cell = headerRow.getCell(i);
-                if (cell != null) {
-                    Cell outputCell = outputHeaderRow.createCell(i);
-                    ExcelUtils.copyCellValue(cell, outputCell);
+            while (regionIndex < merged.size() && merged.get(regionIndex).getLastRow() < index) regionIndex++;
+            if (regionIndex < merged.size()) {
+                CellRangeAddress region = merged.get(regionIndex);
+                if (index >= region.getFirstRow() && (index != region.getFirstRow() || fill != region.getFirstColumn())) {
+                    throw new IOException("工作表“" + sheet.getSheetName() + "”第 " + (index + 1)
+                            + " 行的填充格位于合并区域 " + region.formatAsString() + " 内，只有左上角可以写入。");
                 }
             }
-
-            final int totalRows = sheet.getLastRowNum();
-            for (int i = 1; i <= totalRows; i++) {
-                Row row = sheet.getRow(i);
-                if (row == null) continue;
-
-                Row outputRow = outputSheet.createRow(i);
-                Cell lookupCell = row.getCell(lookupIndex);
-                String lookupValue = lookupCell == null ? null : ExcelUtils.getCellValueAsString(lookupCell);
-                MappingRelations.Match match = lookupCell == null ? null : mappingRelations.resolve(lookupValue);
-
-                for (int j = 0; j < row.getLastCellNum(); j++) {
-                    Cell cell = row.getCell(j);
-                    if (cell != null) {
-                        Cell outputCell = outputRow.createCell(j);
-                        if (j == fillIndex && match != null) {
-                            if (match.isAmbiguous()) {
-                                preserveMappingCell(cell, outputCell, preservedDateStyles);
-                            }
-                        } else {
-                            ExcelUtils.copyCellValue(cell, outputCell);
-                        }
-                    }
-                }
-
-                if (match != null) {
-                    if (match.isAmbiguous()) {
-                        conflicts.record(i + 1, lookupValue, match);
-                        stats[2]++;
-                    } else {
-                        writeMappingValue(outputRow, fillIndex, lookupValue, match, stats);
-                    }
-                }
-
-                stats[0]++;
-                if (stats[0] % BATCH_SIZE == 0) {
-                    ((SXSSFSheet) outputSheet).flushRows();
-                    final int percent = Math.min(99, (int) ((i * 100.0) / totalRows));
-                    progress.accept(percent, "正在处理数据... " + percent + "%");
-                }
+            if (cell == null) {
+                cell = row.createCell(fill);
+            } else {
+                // 清除旧公式或 inlineStr 内容，保留该格的样式后再写入文本。
+                cell.setBlank();
+            }
+            String value = match.getValue();
+            cell.setCellValue(value == null ? fallback : value);
+            filled = true;
+            if (value != null) stats[1]++;
+        }
+        if (filled) {
+            if (workbook instanceof XSSFWorkbook) {
+                // 保留用户的手动/自动计算模式，仅标记依赖单元格需要刷新。
+                CTWorkbook xml = ((XSSFWorkbook) workbook).getCTWorkbook();
+                (xml.isSetCalcPr() ? xml.getCalcPr() : xml.addNewCalcPr()).setFullCalcOnLoad(true);
+            } else {
+                workbook.setForceFormulaRecalculation(true);
             }
         }
         return stats;
     }
 
-    private static void writeMappingValue(Row row, int fillIndex, String lookupValue,
-                                          MappingRelations.Match match, int[] stats) {
-        Cell cell = row.getCell(fillIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-        String mappedValue = match.getValue();
-        if (mappedValue == null) {
-            cell.setCellValue(lookupValue);
-        } else {
-            cell.setCellValue(mappedValue);
-            stats[1]++;
-        }
-    }
-
-    /** 冲突格采用源值或公式的已保存结果，避免复制公式后在新工作簿中重新计算。 */
-    private static void preserveMappingCell(Cell source, Cell target, Map<String, CellStyle> dateStyles) {
-        CellType type = source.getCellType() == CellType.FORMULA ? source.getCachedFormulaResultType() : source.getCellType();
-        target.setBlank();
-        switch (type) {
-            case STRING:
-                target.setCellValue(source.getStringCellValue());
-                break;
-            case BOOLEAN:
-                target.setCellValue(source.getBooleanCellValue());
-                break;
-            case ERROR:
-                target.setCellErrorValue(source.getErrorCellValue());
-                break;
+    /** .xlsx 未命中时回填读取到的原文本，例如数字 7.0；查找时使用与关系表相同的键 7。 */
+    private static String xlsxLookupText(XSSFCell cell, String key) {
+        switch (cell.getCellType()) {
             case NUMERIC:
-                if (DateUtil.isCellDateFormatted(source)) {
-                    ExcelUtils.setDateCellValue(target, source.getLocalDateTimeCellValue(),
-                            source.getCellStyle().getDataFormatString(), dateStyles);
-                } else {
-                    target.setCellValue(source.getNumericCellValue());
-                }
-                break;
-            default:
-                break;
+                return DateUtil.isCellDateFormatted(cell)
+                        ? ExcelUtils.formatExcelDate(cell.getNumericCellValue(), cell.getSheet().getWorkbook().isDate1904())
+                        : cell.getRawValue();
+            case BOOLEAN: return cell.getRawValue();
+            case STRING: return "inlineStr".equals(cell.getCTCell().getT().toString()) ? key : cell.getStringCellValue();
+            case ERROR: return FormulaError.forInt(cell.getErrorCellValue()).getString();
+            case FORMULA:
+                return cell.getCachedFormulaResultType() == CellType.ERROR
+                        ? FormulaError.forInt(cell.getErrorCellValue()).getString() : key;
+            default: return key;
+        }
+    }
+
+    private static void freezeMappingFormula(File file, Cell cell) throws IOException {
+        CellValue cached;
+        try {
+            cached = FormulaCache.read(cell);
+        } catch (FormulaCache.FormulaCacheException e) {
+            throw e.inFile(file);
+        }
+        cell.setBlank();
+        switch (cached.getCellType()) {
+            case NUMERIC: cell.setCellValue(cached.getNumberValue()); break;
+            case STRING: cell.setCellValue(cached.getStringValue()); break;
+            case BOOLEAN: cell.setCellValue(cached.getBooleanValue()); break;
+            case ERROR: cell.setCellErrorValue(cached.getErrorValue()); break;
+            default: throw new IOException("无法读取公式结果：" + cell.getAddress());
         }
     }
 
@@ -1201,7 +1141,7 @@ public class ExcelTools {
         private void record(int targetRowNumber, String lookupValue, MappingRelations.Match match) {
             for (Map.Entry<String, List<MappingRelations.Origin>> candidate : match.getCandidates().entrySet()) {
                 for (MappingRelations.Origin origin : candidate.getValue()) {
-                    if (sheet == null || rowNumber > SpreadsheetVersion.EXCEL2007.getLastRowIndex()) {
+                    if (sheet == null || rowNumber > workbook.getSpreadsheetVersion().getLastRowIndex()) {
                         newSheet();
                     }
                     Row row = sheet.createRow(rowNumber++);
@@ -1216,8 +1156,12 @@ public class ExcelTools {
         }
 
         private void newSheet() {
-            sheetNumber++;
-            sheet = workbook.createSheet(sheetNumber == 1 ? "映射冲突" : "映射冲突" + sheetNumber);
+            String name;
+            do {
+                sheetNumber++;
+                name = sheetNumber == 1 ? "映射冲突" : "映射冲突" + sheetNumber;
+            } while (workbook.getSheet(name) != null);
+            sheet = workbook.createSheet(name);
             rowNumber = 1;
             Row header = sheet.createRow(0);
             String[] columns = {"目标行号", "查找值", "匹配方向", "候选值", "关系文件", "关系行号"};
@@ -1285,20 +1229,19 @@ public class ExcelTools {
         protectedInputs.add(inputFile);
         try (SafeExport export = SafeExport.begin(outputFile, protectedInputs.toArray(new File[0]))) {
             int[] stats;
-            try (SXSSFWorkbook workbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
-                try {
-                    if (inputFile.getName().toLowerCase().endsWith(".xlsx")) {
-                        stats = processApplyMappingXlsx(inputFile, workbook, lookupField, fillField,
-                                mappingRelations, progress, log);
+            try (FileInputStream input = new FileInputStream(inputFile);
+                 Workbook workbook = WorkbookFactory.create(input)) {
+                boolean xlsOutput = outputFile.getName().toLowerCase(Locale.ROOT).endsWith(".xls");
+                if (xlsOutput && !(workbook instanceof HSSFWorkbook)) {
+                    throw new IOException("请将此工作簿保存为 .xlsx，以保留原格式。");
+                }
+                stats = applyToWorkbook(inputFile, workbook, lookupField, fillField, mappingRelations, progress, log);
+                try (FileOutputStream stream = new FileOutputStream(export.temporaryFile())) {
+                    if (workbook instanceof HSSFWorkbook && !xlsOutput) {
+                        LegacyWorkbookConverter.writeXlsx((HSSFWorkbook) workbook, stream);
                     } else {
-                        stats = processApplyMappingXls(inputFile, workbook, lookupField, fillField,
-                                mappingRelations, progress, log);
-                    }
-                    try (FileOutputStream stream = new FileOutputStream(export.temporaryFile())) {
                         workbook.write(stream);
                     }
-                } finally {
-                    workbook.dispose();
                 }
             }
             export.commit();

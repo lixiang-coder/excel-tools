@@ -6,6 +6,7 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.Rule;
 import org.junit.Test;
@@ -197,6 +198,33 @@ public class ExcelToolsExportTest {
                 new MappingRelations(), NO_PROGRESS, NO_LOG));
         assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(output.toPath()));
         assertEquals(before, directoryEntries());
+    }
+
+    @Test
+    public void refusesToPublishHiddenWritesInsideMergedFillCells() throws Exception {
+        File target = new File(temporary.getRoot(), "merged." + extension);
+        try (Workbook source = "xls".equals(extension) ? new HSSFWorkbook() : new XSSFWorkbook();
+             FileOutputStream stream = new FileOutputStream(target)) {
+            Sheet sheet = source.createSheet("目标");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("Key");
+            header.createCell(1).setCellValue("Value");
+            sheet.createRow(1).createCell(0).setCellValue("A");
+            sheet.createRow(2).createCell(0).setCellValue("B");
+            sheet.addMergedRegion(new CellRangeAddress(1, 2, 1, 1));
+            source.write(stream);
+        }
+        byte[] original = Files.readAllBytes(target.toPath());
+        File existing = existingOutput("existing." + extension);
+        File absent = new File(temporary.getRoot(), "absent." + extension);
+        for (File destination : Arrays.asList(existing, absent)) {
+            IOException failure = assertThrows(IOException.class, () -> ExcelTools.exportAppliedMapping(
+                    target, destination, "Key", "Value", new MappingRelations(), NO_PROGRESS, NO_LOG));
+            assertTrue(failure.getMessage(), failure.getMessage().contains("B2:B3"));
+            assertArrayEquals(original, Files.readAllBytes(target.toPath()));
+            assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(existing.toPath()));
+            assertFalse(absent.exists());
+        }
     }
 
     private BiConsumer<Integer, String> stillUnpublished(File output) {

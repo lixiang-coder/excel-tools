@@ -15,6 +15,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.openxmlformats.schemas.spreadsheetml.x2006.main.STCellType;
+import org.openxmlformats.schemas.spreadsheetml.x2006.main.STCalcMode;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -159,6 +160,30 @@ public class ExcelToolsColumnFormulaTest {
         assertMissingCacheProtected(true, "");
     }
 
+    @Test
+    public void appliedMappingKeepsUnusedFormulasAndRequestsRecalculationInTheOriginalMode() throws Exception {
+        File source = temporary.newFile("manual.xlsx");
+        try (XSSFWorkbook book = new XSSFWorkbook()) {
+            Sheet sheet = book.createSheet("原表");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("Key");
+            header.createCell(1).setCellValue("Value");
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue("A");
+            data.createCell(2).setCellFormula("LEN(B2)");
+            book.getCTWorkbook().addNewCalcPr().setCalcMode(STCalcMode.MANUAL);
+            write(book, source);
+        }
+        File output = new File(temporary.getRoot(), "mapped.xlsx");
+        ExcelTools.exportAppliedMapping(source, output, "Key", "Value", new MappingRelations(), NO_PROGRESS, NO_LOG);
+        try (Workbook result = WorkbookFactory.create(output, null, true)) {
+            XSSFWorkbook book = (XSSFWorkbook) result;
+            assertEquals("LEN(B2)", book.getSheetAt(0).getRow(1).getCell(2).getCellFormula());
+            assertEquals(STCalcMode.MANUAL, book.getCTWorkbook().getCalcPr().getCalcMode());
+            assertTrue(book.getCTWorkbook().getCalcPr().getFullCalcOnLoad());
+        }
+    }
+
     private void assertHeaderPositions(String extension, boolean explicitBlank) throws Exception {
         File input = gapWorkbook("headers", extension, explicitBlank, false);
         assertEquals(Arrays.asList("Key", "", "Value"), ExcelUtils.readHeadersOnly(input));
@@ -210,8 +235,16 @@ public class ExcelToolsColumnFormulaTest {
                 relations, NO_PROGRESS, NO_LOG);
 
         assertArrayEquals(new int[] {1, 1, 0}, stats);
-        assertEquals(cache, cellText(output, 1, 0));
-        assertEquals(mapped, cellText(output, 1, 1));
+        try (Workbook original = WorkbookFactory.create(source, null, true);
+             Workbook result = WorkbookFactory.create(output, null, true)) {
+            Cell originalLookup = original.getSheetAt(0).getRow(1).getCell(0);
+            Cell outputLookup = result.getSheetAt(0).getRow(1).getCell(0);
+            assertEquals(CellType.FORMULA, outputLookup.getCellType());
+            assertEquals(originalLookup.getCellFormula(), outputLookup.getCellFormula());
+            assertEquals(originalLookup.getCachedFormulaResultType(), outputLookup.getCachedFormulaResultType());
+            assertEquals(originalLookup.getNumericCellValue(), outputLookup.getNumericCellValue(), 0);
+            assertEquals(mapped, result.getSheetAt(0).getRow(1).getCell(1).getStringCellValue());
+        }
     }
 
     private void assertFormulaOutput(String name, String formula, String cache,
