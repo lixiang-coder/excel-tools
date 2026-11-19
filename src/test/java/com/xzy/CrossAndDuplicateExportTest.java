@@ -42,6 +42,18 @@ public class CrossAndDuplicateExportTest {
     }
 
     @Test
+    public void explicitSameColumnFillStillAppendsToTheTargetKey() throws Exception {
+        Fixture fixture = fixture();
+        File output = new File(fixture.directory, "result.xlsx");
+        new CrossSheetFiller().fill(fixture.source.getPath(), fixture.target.getPath(), output.getPath(),
+                "id", "value", "id", "id", null);
+        try (Workbook workbook = WorkbookFactory.create(output)) {
+            assertEquals("A|first|second|first", text(workbook.getSheetAt(0), 1, 0));
+            assertEquals("existing", text(workbook.getSheetAt(0), 1, 1));
+        }
+    }
+
+    @Test
     public void crossSheetFailurePreservesExistingOutput() throws Exception {
         Fixture fixture = fixture();
         File output = existingOutput(fixture);

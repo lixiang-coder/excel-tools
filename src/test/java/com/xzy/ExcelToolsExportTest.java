@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -71,6 +72,58 @@ public class ExcelToolsExportTest {
         assertArrayEquals(sourceBefore, Files.readAllBytes(source.toPath()));
         assertArrayEquals(templateBefore, Files.readAllBytes(template.toPath()));
         assertEquals(before, directoryEntries());
+    }
+
+    @Test
+    public void processorNamesEveryMissingMappedFieldWithoutPublishingPartialRows() throws Exception {
+        Map<String, String> mappings = new LinkedHashMap<>();
+        mappings.put("姓名", "联系人");
+        mappings.put("旧手机", "电话");
+        mappings.put("旧地址", "邮寄地址");
+        mappings.put("邮箱", "邮件地址");
+        File originalSource = workbook("原源表", new String[][]{{"姓名", "旧手机", "旧地址", "邮箱"}, {"张三"}});
+        File originalTemplate = workbook("原模板", new String[][]{{"联系人", "电话", "邮寄地址", "邮件地址"}});
+        File newSource = workbook("新源表", new String[][]{{"姓名", "邮箱"}, {"李四"}});
+        File newTemplate = workbook("新模板", new String[][]{{"联系人", "电话"}});
+        File existing = existingOutput("existing.xlsx");
+        File absent = new File(temporary.getRoot(), "absent.xlsx");
+        Set<String> before = directoryEntries();
+
+        for (File output : Arrays.asList(existing, absent)) {
+            IOException sourceOnly = assertThrows(IOException.class, () -> ExcelTools.exportProcessedExcel(
+                    newSource, originalTemplate, output, mappings, NO_PROGRESS, NO_LOG));
+            assertTrue(sourceOnly.getMessage(), sourceOnly.getMessage().contains("源表缺少字段：旧手机、旧地址"));
+            assertFalse(sourceOnly.getMessage(), sourceOnly.getMessage().contains("模板缺少字段"));
+            IOException templateOnly = assertThrows(IOException.class, () -> ExcelTools.exportProcessedExcel(
+                    originalSource, newTemplate, output, mappings, NO_PROGRESS, NO_LOG));
+            assertTrue(templateOnly.getMessage(), templateOnly.getMessage().contains("模板缺少字段：邮寄地址、邮件地址"));
+            assertFalse(templateOnly.getMessage(), templateOnly.getMessage().contains("源表缺少字段"));
+            IOException both = assertThrows(IOException.class, () -> ExcelTools.exportProcessedExcel(
+                    newSource, newTemplate, output, mappings, NO_PROGRESS, NO_LOG));
+            assertTrue(both.getMessage(), both.getMessage().contains("源表缺少字段：旧手机、旧地址"));
+            assertTrue(both.getMessage(), both.getMessage().contains("模板缺少字段：邮寄地址、邮件地址"));
+            assertArrayEquals(OLD_OUTPUT, Files.readAllBytes(existing.toPath()));
+            assertFalse(absent.exists());
+            assertEquals(before, directoryEntries());
+        }
+    }
+
+    @Test
+    public void compatibleReplacementFilesReuseMappingsByNameAndAllowMissingDataCells() throws Exception {
+        Map<String, String> mappings = Collections.singletonMap("姓名", "联系人");
+        File firstSource = workbook("first-source", new String[][]{{"姓名"}, {"张三"}});
+        File firstTemplate = workbook("first-template", new String[][]{{"联系人"}});
+        File output = new File(temporary.getRoot(), "result.xlsx");
+        assertEquals(1, ExcelTools.exportProcessedExcel(firstSource, firstTemplate, output, mappings, NO_PROGRESS, NO_LOG));
+        assertEquals("张三", cell(output, 1, 0));
+
+        File nextSource = workbook("next-source", new String[][]{{"备注", "姓名"}, {"已核对", "李四"}, {"待核对"}});
+        File nextTemplate = workbook("next-template", new String[][]{{"附注", "联系人"}});
+        assertEquals(2, ExcelTools.exportProcessedExcel(nextSource, nextTemplate, output, mappings, NO_PROGRESS, NO_LOG));
+        assertEquals("李四", cell(output, 1, 1));
+        try (Workbook result = WorkbookFactory.create(output, null, true)) {
+            assertNull(result.getSheetAt(0).getRow(2).getCell(1));
+        }
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.xzy;
 
+import com.xzy.panel.CrossSheetPanel;
 import com.xzy.ui.Workbench;
 import com.xzy.util.ExcelUtils;
 import com.xzy.util.SafeExport;
@@ -10,7 +11,6 @@ import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.util.IOUtils;
 
 import javax.swing.*;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.Font;
 import java.awt.Dimension;
 import java.awt.Insets;
@@ -223,8 +223,6 @@ public class CrossSheetFiller {
                 btn.setOpaque(true);
             };
             // 按钮视觉和逻辑禁用控制
-            final boolean[] isSelAEnabled = {true};
-            final boolean[] isSelBEnabled = {true};
             final boolean[] isSelOutEnabled = {true};
             setButtonVisualEnabled.accept(selA, true);
             setButtonVisualEnabled.accept(selB, true);
@@ -351,101 +349,11 @@ public class CrossSheetFiller {
             frame.add(mainPanel, BorderLayout.CENTER);
 
             // 事件
-            selA.addActionListener(e -> {
-                if (!isSelAEnabled[0]) return;
-                JFileChooser fc = new JFileChooser();
-                fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
-                    aPath.setText(fc.getSelectedFile().getAbsolutePath());
-                    JProgressBar[] progressBarHolder = new JProgressBar[1];
-                    JLabel[] percentLabelHolder = new JLabel[1];
-                    JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载源表表头，请稍候...", true, progressBarHolder, percentLabelHolder);
-                    SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                        @Override
-                        protected Void doInBackground() throws Exception {
-                            try {
-                                java.util.List<String> headers = readMatchingHeaders(new File(aPath.getText()));
-                                SwingUtilities.invokeLater(() -> {
-                                    aHeadersArea.setText(String.join(", ", headers));
-                                    aKeyCombo.removeAllItems();
-                                    aValCombo.removeAllItems();
-                                    for (String h : headers) {
-                                        aKeyCombo.addItem(h);
-                                        aValCombo.addItem(h);
-                                    }
-                                    if (aKeyCombo.getItemCount() > 0) aKeyCombo.setSelectedIndex(0);
-                                    if (aValCombo.getItemCount() > 0) aValCombo.setSelectedIndex(0);
-                                });
-                            } catch (Exception ex) {
-                                SwingUtilities.invokeLater(() -> {
-                                    aHeadersArea.setText("读取源表表头失败: " + ex.getMessage());
-                                    aKeyCombo.removeAllItems();
-                                    aValCombo.removeAllItems();
-                                });
-                            }
-                            return null;
-                        }
-                        @Override
-                        protected void done() {
-                            progressDialog.dispose();
-                        }
-                    };
-                    worker.execute();
-                    progressDialog.setVisible(true);
-                    try {
-                        worker.get();
-                    } catch (Exception ex) {
-                        // ignore
-                    }
-                }
-            });
+            CrossSheetPanel.WorkbookFields source = new CrossSheetPanel.WorkbookFields(aPath, aHeadersArea, aKeyCombo, aValCombo, false);
+            CrossSheetPanel.WorkbookFields target = new CrossSheetPanel.WorkbookFields(bPath, bHeadersArea, bKeyCombo, bValCombo, true);
+            selA.addActionListener(e -> source.choose(frame, status::setText));
             selB.addActionListener(e -> {
-                if (!isSelBEnabled[0]) return;
-                JFileChooser fc = new JFileChooser();
-                fc.setFileFilter(new FileNameExtensionFilter("Excel Files", "xlsx", "xls"));
-                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
-                    bPath.setText(fc.getSelectedFile().getAbsolutePath());
-                    JProgressBar[] progressBarHolder = new JProgressBar[1];
-                    JLabel[] percentLabelHolder = new JLabel[1];
-                    JDialog progressDialog = createProgressDialog(frame, "处理中", "正在加载目标表表头，请稍候...", true, progressBarHolder, percentLabelHolder);
-                    SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-                        @Override
-                        protected Void doInBackground() throws Exception {
-                            try {
-                                java.util.List<String> headers = readMatchingHeaders(new File(bPath.getText()));
-                                SwingUtilities.invokeLater(() -> {
-                                    bHeadersArea.setText(String.join(", ", headers));
-                                    bKeyCombo.removeAllItems();
-                                    bValCombo.removeAllItems();
-                                    for (String h : headers) {
-                                        bKeyCombo.addItem(h);
-                                        bValCombo.addItem(h);
-                                    }
-                                    if (bKeyCombo.getItemCount() > 0) bKeyCombo.setSelectedIndex(0);
-                                    if (bValCombo.getItemCount() > 0) bValCombo.setSelectedIndex(0);
-                                });
-                            } catch (Exception ex) {
-                                SwingUtilities.invokeLater(() -> {
-                                    bHeadersArea.setText("读取目标表表头失败: " + ex.getMessage());
-                                    bKeyCombo.removeAllItems();
-                                    bValCombo.removeAllItems();
-                                });
-                            }
-                            return null;
-                        }
-                        @Override
-                        protected void done() {
-                            progressDialog.dispose();
-                        }
-                    };
-                    worker.execute();
-                    progressDialog.setVisible(true);
-                    try {
-                        worker.get();
-                    } catch (Exception ex) {
-                        // ignore
-                    }
-                }
+                if (target.choose(frame, status::setText)) outPath.setText("");
             });
             selOut.addActionListener(e -> {
                 if (!isSelOutEnabled[0]) return;
@@ -457,6 +365,22 @@ public class CrossSheetFiller {
                 if (output != null) outPath.setText(output.getAbsolutePath());
             });
             runBtn.addActionListener(e -> {
+                String sourcePath = aPath.getText();
+                String targetPath = bPath.getText();
+                String outputPath = outPath.getText();
+                String sourceKey = (String) aKeyCombo.getSelectedItem();
+                String sourceValue = (String) aValCombo.getSelectedItem();
+                String targetKey = (String) bKeyCombo.getSelectedItem();
+                String targetValue = (String) bValCombo.getSelectedItem();
+                if (sourcePath.isEmpty() || targetPath.isEmpty() || sourceKey == null || sourceValue == null || targetKey == null) {
+                    JOptionPane.showMessageDialog(frame, "请先加载源表和目标表，并选择匹配字段。", "提示", JOptionPane.WARNING_MESSAGE);
+                    return;
+                }
+                if (!CrossSheetPanel.confirmTargetColumn(frame, targetKey, targetValue)) return;
+                if (outputPath.isEmpty()) {
+                    JOptionPane.showMessageDialog(frame, "请选择输出文件。", "提示", JOptionPane.WARNING_MESSAGE);
+                    return;
+                }
                 JProgressBar[] progressBarHolder = new JProgressBar[1];
                 JLabel[] percentLabelHolder = new JLabel[1];
                 JDialog progressDialog = createProgressDialog(frame, "处理中", "正在处理数据...", false, progressBarHolder, percentLabelHolder);
@@ -467,9 +391,7 @@ public class CrossSheetFiller {
                     protected Void doInBackground() {
                         try {
                             new CrossSheetFiller().fill(
-                                    aPath.getText(), bPath.getText(), outPath.getText(),
-                                    (String)aKeyCombo.getSelectedItem(), (String)aValCombo.getSelectedItem(),
-                                    (String)bKeyCombo.getSelectedItem(), (String)bValCombo.getSelectedItem(),
+                                    sourcePath, targetPath, outputPath, sourceKey, sourceValue, targetKey, targetValue,
                                     (cur, total) -> publish((int) (cur * 100.0 / total))
                             );
                         } catch (Exception ex) {
@@ -496,7 +418,7 @@ public class CrossSheetFiller {
                 progressDialog.setVisible(true);
                 try {
                     worker.get();
-                    status.setText("处理完成: " + outPath.getText());
+                    status.setText("处理完成: " + outputPath);
                     JOptionPane.showMessageDialog(frame, "处理完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception ex) {
                     status.setText("失败: " + ex.getMessage());

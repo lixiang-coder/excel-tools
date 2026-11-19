@@ -106,6 +106,67 @@ public class AppliedMappingWorkbookTest {
     }
 
     @Test
+    public void blankLookupKeysPreserveFillCellsAndZeroAndFalseStillMatch() throws Exception {
+        File source = new File(temporary.getRoot(), "blank-keys." + inputFormat);
+        try (Workbook workbook = "xls".equals(inputFormat) ? new HSSFWorkbook() : new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet(MAIN_SHEET);
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("Key");
+            header.createCell(1).setCellValue("Fill");
+            CellStyle style = customStyle(workbook);
+            for (int index = 1; index <= 6; index++) {
+                Cell fill = sheet.createRow(index).createCell(1);
+                fill.setCellFormula("2+3");
+                fill.setCellStyle(style);
+            }
+            // 第一行查找格缺失，其他行包含不同形式的空值。
+            sheet.getRow(2).createCell(0).setBlank();
+            sheet.getRow(3).createCell(0).setCellValue("");
+            sheet.getRow(4).createCell(0).setCellValue(" \t ");
+            sheet.getRow(5).createCell(0).setCellValue("\u00a0\u3000");
+            sheet.getRow(6).createCell(0).setCellFormula("IF(1=1,\"\",\"x\")");
+            sheet.createRow(7).createCell(0).setCellValue("   ");
+            sheet.createRow(8).createCell(0).setCellValue(0);
+            sheet.createRow(9).createCell(0).setCellValue(false);
+            sheet.createRow(10).createCell(0).setCellValue("  unmatched  ");
+            Row verified = sheet.createRow(11);
+            verified.createCell(0, CellType.BLANK).setCellStyle(style);
+            verified.createCell(1).setCellValue("已核对");
+            workbook.getCreationHelper().createFormulaEvaluator().evaluateAll();
+            write(workbook, source);
+        }
+        MappingRelations mappings = new MappingRelations();
+        mappings.add("0", "zero", source, 1);
+        mappings.add("false", "boolean", source, 2);
+        File output = new File(temporary.getRoot(), "blank-key-result." + outputFormat);
+
+        int[] stats = ExcelTools.exportAppliedMapping(source, output, "Key", "Fill", mappings,
+                (percent, message) -> { }, message -> { });
+
+        assertArrayEquals(new int[] {11, 2, 0}, stats);
+        try (Workbook original = WorkbookFactory.create(source, null, true);
+             Workbook result = WorkbookFactory.create(output, null, true)) {
+            Sheet sheet = result.getSheetAt(0);
+            for (int index = 1; index <= 6; index++) {
+                Cell before = original.getSheetAt(0).getRow(index).getCell(1);
+                Cell after = sheet.getRow(index).getCell(1);
+                assertCellEquals(before, after);
+                assertStyleEquals(original, before, result, after);
+                assertEquals(5, after.getNumericCellValue(), 0);
+            }
+            assertNull(sheet.getRow(7).getCell(1));
+            assertEquals("zero", sheet.getRow(8).getCell(1).getStringCellValue());
+            assertEquals("boolean", sheet.getRow(9).getCell(1).getStringCellValue());
+            assertEquals("xlsx".equals(inputFormat) ? "  unmatched  " : "unmatched",
+                    sheet.getRow(10).getCell(1).getStringCellValue());
+            Row verified = sheet.getRow(11);
+            assertEquals(CellType.BLANK, verified.getCell(0).getCellType());
+            assertStyleEquals(original, original.getSheetAt(0).getRow(11).getCell(0), result, verified.getCell(0));
+            assertEquals("已核对", verified.getCell(1).getStringCellValue());
+        }
+    }
+
+    @Test
     public void conflictFreeMappingKeepsOriginalSheetCountAndUntouchedWorkbookContent() throws Exception {
         File source = targetWorkbook();
         File relation = relationWorkbook(false);

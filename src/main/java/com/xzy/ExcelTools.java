@@ -207,6 +207,10 @@ public class ExcelTools {
             templateFile.setToolTipText(templateFilePath);
             view.show(cards, "editor");
             sourceList.requestFocusInWindow();
+            String problem = updateProcessorMappingList(save);
+            if (!problem.isEmpty()) {
+                JOptionPane.showMessageDialog(mainFrame, problem, "请检查字段映射", JOptionPane.WARNING_MESSAGE);
+            }
         });
         return cards;
     }
@@ -296,8 +300,6 @@ public class ExcelTools {
         reloadFilesButton.addActionListener(e -> chooseProcessorFiles(() -> {
             processorMappings.clear();
             processorMappingOrder.clear();
-            processorMappingListModel.clear();
-            saveButton.setEnabled(false);
             statusLabel.setText("已重新导入文件，请重新配置映射关系");
             onFilesLoaded.run();
         }));
@@ -327,14 +329,9 @@ public class ExcelTools {
                     processorMappingOrder.add(sourceHeader);
                 }
 
-                // 更新映射列表显示
-                updateProcessorMappingList();
-
                 log("已添加Excel处理器映射: " + String.join(", ", selectedSources) + " -> " + selectedTemplate);
                 statusLabel.setText("已添加映射关系");
-
-                // 启用保存按钮
-                saveButton.setEnabled(true);
+                updateProcessorMappingList(saveButton);
             } else {
                 JOptionPane.showMessageDialog(mainFrame,
                         "请选择源表头和模板表头", "提示", JOptionPane.INFORMATION_MESSAGE);
@@ -343,26 +340,19 @@ public class ExcelTools {
 
         // 删除映射按钮事件
         removeMappingButton.addActionListener(e -> {
-            String selectedMapping = processorMappingList.getSelectedValue();
-            if (selectedMapping != null) {
-                // 从映射字符串中提取源表头
-                String sourceHeader = selectedMapping.split(" -> ")[0];
+            int selected = processorMappingList.getSelectedIndex();
+            if (selected >= 0) {
+                String sourceHeader = processorMappingOrder.get(selected);
+                String selectedMapping = processorMappingList.getSelectedValue();
 
                 // 删除映射
                 processorMappings.remove(sourceHeader);
                 // 从顺序列表中移除
                 processorMappingOrder.remove(sourceHeader);
 
-                // 更新映射列表显示
-                updateProcessorMappingList();
-
                 log("已删除Excel处理器映射: " + selectedMapping);
                 statusLabel.setText("已删除映射关系");
-
-                // 如果没有映射关系，禁用保存按钮
-                if (processorMappings.isEmpty()) {
-                    saveButton.setEnabled(false);
-                }
+                updateProcessorMappingList(saveButton);
             } else {
                 JOptionPane.showMessageDialog(mainFrame,
                         "请选择要删除的映射", "提示", JOptionPane.INFORMATION_MESSAGE);
@@ -409,13 +399,10 @@ public class ExcelTools {
                         "成功",
                         JOptionPane.INFORMATION_MESSAGE);
 
-                // 禁用保存按钮
-                saveButton.setEnabled(false);
-
                 // 清空映射关系
                 processorMappings.clear();
                 processorMappingOrder.clear();
-                updateProcessorMappingList();
+                updateProcessorMappingList(saveButton);
 
                 // 更新状态
                 statusLabel.setText("就绪");
@@ -430,33 +417,24 @@ public class ExcelTools {
         });
     }
 
-    private void updateProcessorMappingList() {
-        if (processorMappingListModel == null) {
-            log("错误：processorMappingListModel 未初始化");
-            return;
+    private String updateProcessorMappingList(JButton saveButton) {
+        Set<String> sources = new HashSet<>(Collections.list(sourceListModel.elements()));
+        Set<String> targets = new HashSet<>(Collections.list(templateListModel.elements()));
+        processorMappingListModel.clear();
+        for (String source : processorMappingOrder) {
+            String target = processorMappings.get(source);
+            String text = source + " -> " + target;
+            if (!sources.contains(source) || !targets.contains(target)) text += "（字段缺失）";
+            processorMappingListModel.addElement(text);
         }
-        if (processorMappingList == null) {
-            log("错误：processorMappingList 未初始化");
-            return;
+        String problem = missingProcessorFields(processorMappings, sources, targets);
+        saveButton.setEnabled(!processorMappings.isEmpty() && problem.isEmpty());
+        saveButton.setToolTipText(problem.isEmpty() ? null : problem);
+        if (!problem.isEmpty()) {
+            statusLabel.setText(problem);
+            log(problem);
         }
-
-        SwingUtilities.invokeLater(() -> {
-            processorMappingListModel.clear();
-            log("开始更新Excel处理器映射列表，当前映射数量: " + processorMappings.size());
-
-            // 按照添加顺序显示映射
-            for (String sourceHeader : processorMappingOrder) {
-                if (processorMappings.containsKey(sourceHeader)) {
-                    String mappingText = sourceHeader + " -> " + processorMappings.get(sourceHeader);
-                    processorMappingListModel.addElement(mappingText);
-                    log("添加Excel处理器映射到列表: " + mappingText);
-                }
-            }
-
-            // 强制刷新列表显示
-            processorMappingList.repaint();
-            log("Excel处理器映射列表更新完成，当前显示项数: " + processorMappingListModel.getSize());
-        });
+        return problem;
     }
 
     private void loadHeaders(File sourceFile, File templateFile, Runnable onFilesLoaded) {
@@ -789,6 +767,9 @@ public class ExcelTools {
             Cell key = row.getCell(lookup);
             if (key == null) continue;
             String lookupKey = ExcelUtils.getCheckedCellText(file, key);
+            CellType keyType = key.getCellType() == CellType.FORMULA ? key.getCachedFormulaResultType() : key.getCellType();
+            if (keyType == CellType.BLANK || (keyType == CellType.STRING && lookupKey.chars()
+                    .allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)))) continue;
             String fallback = lookupKey;
             if (key instanceof XSSFCell) {
                 fallback = xlsxLookupText((XSSFCell) key, lookupKey);
@@ -992,6 +973,25 @@ public class ExcelTools {
         }
     }
 
+    private static String missingProcessorFields(Map<String, String> mappings, Set<String> sources, Set<String> targets) {
+        Set<String> missingSources = new LinkedHashSet<>(mappings.keySet());
+        missingSources.removeAll(sources);
+        Set<String> missingTargets = new LinkedHashSet<>(mappings.values());
+        missingTargets.removeAll(targets);
+        List<String> problems = new ArrayList<>();
+        if (!missingSources.isEmpty()) problems.add("源表缺少字段：" + String.join("、", missingSources));
+        if (!missingTargets.isEmpty()) problems.add("模板缺少字段：" + String.join("、", missingTargets));
+        return problems.isEmpty() ? "" : String.join("。", problems) + "。请调整映射或重新选择文件。";
+    }
+
+    private static Map<String, Integer> indexProcessorSource(List<String> headers, String location,
+                                                             Map<String, String> mappings, Set<String> targets) throws IOException {
+        Map<String, Integer> sources = ExcelUtils.indexNamedHeaders(headers, location);
+        String problem = missingProcessorFields(mappings, sources.keySet(), targets);
+        if (!problem.isEmpty()) throw new IOException(problem);
+        return sources;
+    }
+
     private static int writeProcessedExcel(File inputFile, File templateFile, File outputFile,
                                            Map<String, String> mappings, BiConsumer<Integer, String> progress, Consumer<String> log) throws Exception {
         int totalProcessed;
@@ -1031,8 +1031,8 @@ public class ExcelTools {
                 List<String> sourceHeaders = XlsxSheetReader.readHeaders(inputFile);
 
                 // 构建源表头索引
-                Map<String, Integer> sourceHeaderMap = ExcelUtils.indexNamedHeaders(
-                        sourceHeaders, inputFile.getName() + " / 首个工作表");
+                Map<String, Integer> sourceHeaderMap = indexProcessorSource(sourceHeaders,
+                        inputFile.getName() + " / 首个工作表", mappings, templateHeaderIndexMap.keySet());
 
                 log.accept("源表表头: " + sourceHeaders);
 
@@ -1110,8 +1110,8 @@ public class ExcelTools {
                      Workbook workbook = WorkbookFactory.create(fis)) {
                     Sheet sheet = workbook.getSheetAt(0);
 
-                    Map<String, Integer> sourceHeaderMap = ExcelUtils.indexNamedHeaders(
-                            ExcelUtils.readHeaderRow(sheet.getRow(0)), inputFile.getName() + " / " + sheet.getSheetName());
+                    Map<String, Integer> sourceHeaderMap = indexProcessorSource(ExcelUtils.readHeaderRow(sheet.getRow(0)),
+                            inputFile.getName() + " / " + sheet.getSheetName(), mappings, templateHeaderIndexMap.keySet());
 
                     int totalRows = sheet.getLastRowNum();
                     int processedRows = 0;
