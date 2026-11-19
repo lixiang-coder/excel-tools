@@ -1,5 +1,6 @@
 package com.xzy;
 
+import com.xzy.util.ExcelUtils;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
@@ -23,6 +24,7 @@ import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.Assert.*;
 
@@ -123,6 +125,32 @@ public class DuplicateBlankKeyTest {
         assertEquals(3, report.getOutputRows());
         assertEquals(2, report.getBlankKeyRows());
         assertRows(output, new String[][] {{"", "", "  备注  "}, {"", "#DIV/0!"}, {"#N/A", ""}});
+    }
+
+    @Test
+    public void numericYearHeadersFromTheSelectorWorkAsKeyMergedAndOrdinaryColumns() throws Exception {
+        File input = temporary.newFile("years." + extension);
+        try (Workbook workbook = newWorkbook()) {
+            Sheet sheet = workbook.createSheet("Data");
+            row(sheet, 0, "id", 2025, 2026, "2025.0");
+            row(sheet, 1, "A", "甲", "红", "上");
+            row(sheet, 2, "A", "乙", "绿", "中");
+            row(sheet, 3, "A", "甲", "蓝", "下");
+            save(workbook, input);
+        }
+        List<String> headers = ExcelUtils.readNamedHeaders(input, String.CASE_INSENSITIVE_ORDER);
+        assertEquals(Arrays.asList("id", "2025", "2026", "2025.0"), headers);
+        File output = new File(temporary.getRoot(), "year-result.xlsx");
+        DuplicateColumnMerger merger = new DuplicateColumnMerger();
+        merger.mergeWithReport(input.getPath(), output.getPath(), headers.get(0),
+                Collections.singletonList(headers.get(1)), null);
+        assertRows(output, new String[][] {{"A", "甲|乙", "红", "上"}});
+        try (Workbook result = WorkbookFactory.create(output, null, true)) {
+            assertEquals(headers, ExcelUtils.readHeaderRow(result.getSheetAt(0).getRow(0)));
+        }
+        merger.mergeWithReport(input.getPath(), output.getPath(), headers.get(1),
+                Collections.singletonList(headers.get(2)), null);
+        assertRows(output, new String[][] {{"A", "甲", "红|蓝", "上"}, {"A", "乙", "绿", "中"}});
     }
 
     private File mixedInput() throws Exception {

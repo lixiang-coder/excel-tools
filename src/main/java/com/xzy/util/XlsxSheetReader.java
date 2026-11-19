@@ -259,12 +259,12 @@ public final class XlsxSheetReader {
                     throw cellError("无效的日期值: " + raw);
                 }
             }
-            if (formula) {
+            if (formula || (headersOnly && (type == null || "n".equals(type)))) {
                 try {
                     double number = Double.parseDouble(raw);
                     return ExcelUtils.numericText(number);
                 } catch (NumberFormatException e) {
-                    throw cellError("无效的公式数值缓存: " + raw);
+                    throw cellError((formula ? "无效的公式数值缓存: " : "无效的数值表头: ") + raw);
                 }
             }
             // 普通数字保持原 XLSX 文本表现，避免改变已有主键的匹配规则。

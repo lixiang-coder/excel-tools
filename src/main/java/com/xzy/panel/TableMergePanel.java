@@ -9,6 +9,7 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -159,22 +160,16 @@ public class TableMergePanel {
     private void runMerge(JPanel mainPanel, boolean sheetMode, String outputPath,
                           TableMerger.MergeStrategy strategy) {
         ProgressDialog progressDialog = ProgressDialog.create(ctx.getMainFrame(), "表格合并中");
-        SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
+        List<File> inputs = new ArrayList<>(selectedFiles);
+        SwingWorker<TableMerger.MergeSummary, Integer> worker = new SwingWorker<TableMerger.MergeSummary, Integer>() {
             @Override
-            protected Void doInBackground() {
-                try {
-                    TableMerger merger = new TableMerger();
-                    if (sheetMode) {
-                        merger.mergeSheetsInWorkbook(selectedFiles.get(0).getAbsolutePath(), outputPath, strategy,
-                                (cur, total) -> publish((int) (cur * 100.0 / total)));
-                    } else {
-                        merger.mergeFiles(new ArrayList<>(selectedFiles), outputPath, strategy,
-                                (cur, total) -> publish((int) (cur * 100.0 / total)));
-                    }
-                } catch (Exception ex) {
-                    throw new RuntimeException(ex);
+            protected TableMerger.MergeSummary doInBackground() throws IOException {
+                TableMerger merger = new TableMerger();
+                TableMerger.ProgressListener progress = (cur, total) -> publish((int) (cur * 100.0 / total));
+                if (sheetMode) {
+                    return merger.mergeSheetsInWorkbookWithSummary(inputs.get(0).getAbsolutePath(), outputPath, strategy, progress);
                 }
-                return null;
+                return merger.mergeFilesWithSummary(inputs, outputPath, strategy, progress);
             }
 
             @Override
@@ -195,9 +190,13 @@ public class TableMergePanel {
         worker.execute();
         progressDialog.dialog.setVisible(true);
         try {
-            worker.get();
-            ctx.log("表格合并完成: " + outputPath);
-            JOptionPane.showMessageDialog(mainPanel, "表格合并完成!", "成功", JOptionPane.INFORMATION_MESSAGE);
+            TableMerger.MergeSummary result = worker.get();
+            boolean needsReview = result.getPartialCount() > 0 || result.getFailureCount() > 0;
+            String summary = result.formatSummary();
+            String message = needsReview ? summary + "\n请查看输出文件中的报告，核对相关工作表和原因。" : summary;
+            ctx.log(summary + "\n输出文件：" + outputPath);
+            JOptionPane.showMessageDialog(mainPanel, message, needsReview ? "合并结果需核对" : "合并完成",
+                    needsReview ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception ex) {
             Throwable cause = rootCause(ex);
             if (cause instanceof TableMerger.AmbiguousHeadersException) {

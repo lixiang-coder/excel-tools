@@ -736,7 +736,7 @@ public class ExcelTools {
             String location = file.getName() + " / " + sheet.getSheetName();
             for (Cell cell : header) {
                 String name = ExcelUtils.getCheckedCellText(file, cell);
-                if (cell instanceof XSSFCell) name = xlsxLookupText((XSSFCell) cell, name);
+                if (cell instanceof XSSFCell) name = xlsxLookupText((XSSFCell) cell, name, true);
                 ExcelUtils.putUniqueHeader(indices, name, cell.getColumnIndex(), location);
             }
         }
@@ -772,7 +772,7 @@ public class ExcelTools {
                     .allMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)))) continue;
             String fallback = lookupKey;
             if (key instanceof XSSFCell) {
-                fallback = xlsxLookupText((XSSFCell) key, lookupKey);
+                fallback = xlsxLookupText((XSSFCell) key, lookupKey, false);
                 if (fallback == null || fallback.isEmpty()) continue;
                 if (lookupKey.isEmpty()) lookupKey = fallback.trim();
             }
@@ -811,13 +811,14 @@ public class ExcelTools {
         return stats;
     }
 
-    /** .xlsx 未命中时回填读取到的原文本，例如数字 7.0；查找时使用与关系表相同的键 7。 */
-    private static String xlsxLookupText(XSSFCell cell, String key) {
+    /** 数字表头与字段选择器使用同一名称；数据未命中时保留原文本，例如 7.0。 */
+    private static String xlsxLookupText(XSSFCell cell, String key, boolean header) {
         switch (cell.getCellType()) {
             case NUMERIC:
-                return DateUtil.isCellDateFormatted(cell)
-                        ? ExcelUtils.formatExcelDate(cell.getNumericCellValue(), cell.getSheet().getWorkbook().isDate1904())
-                        : cell.getRawValue();
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    return ExcelUtils.formatExcelDate(cell.getNumericCellValue(), cell.getSheet().getWorkbook().isDate1904());
+                }
+                return header ? key : cell.getRawValue();
             case BOOLEAN: return cell.getRawValue();
             case STRING: return "inlineStr".equals(cell.getCTCell().getT().toString()) ? key : cell.getStringCellValue();
             case ERROR: return FormulaError.forInt(cell.getErrorCellValue()).getString();

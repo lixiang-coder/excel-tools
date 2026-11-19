@@ -1,6 +1,7 @@
 package com.xzy;
 
 import com.xzy.model.MappingRelations;
+import com.xzy.util.ExcelUtils;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
@@ -12,6 +13,8 @@ import org.junit.rules.TemporaryFolder;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.Assert.*;
 
@@ -85,6 +88,44 @@ public class MappingConflictCellValueTest {
         }
         try (Workbook result = export(input, 1)) {
             assertEquals("  首尾空格  ", result.getSheetAt(0).getRow(1).getCell(1).getStringCellValue());
+        }
+    }
+
+    @Test
+    public void numericTextAndDateHeadersKeepDistinctNamesWithoutChangingFallbackData() throws Exception {
+        File input = temporary.newFile("numeric-headers.xlsx");
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            workbook.getCTWorkbook().getWorkbookPr().setDate1904(true);
+            Sheet sheet = workbook.createSheet("Data");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue(2025);
+            header.createCell(1).setCellValue("2025.0");
+            Cell date = header.createCell(2);
+            date.setCellValue(1 + 59.6 / 86400);
+            CellStyle dateStyle = workbook.createCellStyle();
+            dateStyle.setDataFormat(workbook.createDataFormat().getFormat("yyyy-mm-dd hh:mm:ss"));
+            date.setCellStyle(dateStyle);
+            for (int index = 1; index <= 2; index++) {
+                Row row = sheet.createRow(index);
+                row.createCell(0).setCellValue(6 + index);
+                row.createCell(2).setCellValue(6 + index);
+            }
+            try (FileOutputStream stream = new FileOutputStream(input)) { workbook.write(stream); }
+        }
+        List<String> names = ExcelUtils.readNamedHeaders(input);
+        assertEquals(Arrays.asList("2025", "2025.0", "1904/01/02 00:01"), names);
+        MappingRelations relations = new MappingRelations();
+        relations.add("7", "七", input, 2);
+        File output = new File(temporary.getRoot(), "filled.xlsx");
+        for (int key : new int[]{0, 2}) {
+            ExcelTools.exportAppliedMapping(input, output, names.get(key), names.get(1), relations,
+                    (percent, message) -> { }, message -> { });
+            try (Workbook result = WorkbookFactory.create(output, null, true)) {
+                Sheet sheet = result.getSheetAt(0);
+                assertEquals("七", sheet.getRow(1).getCell(1).getStringCellValue());
+                assertEquals("8.0", sheet.getRow(2).getCell(1).getStringCellValue());
+                assertEquals(7, sheet.getRow(1).getCell(0).getNumericCellValue(), 0);
+            }
         }
     }
 

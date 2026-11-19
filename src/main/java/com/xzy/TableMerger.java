@@ -6,9 +6,13 @@ import com.xzy.util.FormulaCache.FormulaCacheException;
 import com.xzy.util.SafeExport;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.CellValue;
+import org.apache.poi.ss.usermodel.Date1904Support;
+import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.usermodel.FormulaError;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -23,11 +27,14 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Excel表格合并工具。
@@ -44,6 +51,26 @@ public class TableMerger {
         AUTO,
         HEADER_BASED,
         WPS_STYLE_NO_HEADER
+    }
+
+    public static final class MergeSummary {
+        private final int successCount;
+        private final int partialCount;
+        private final int failureCount;
+
+        private MergeSummary(int successCount, int partialCount, int failureCount) {
+            this.successCount = successCount;
+            this.partialCount = partialCount;
+            this.failureCount = failureCount;
+        }
+
+        public int getSuccessCount() { return successCount; }
+        public int getPartialCount() { return partialCount; }
+        public int getFailureCount() { return failureCount; }
+
+        public String formatSummary() {
+            return "成功 " + successCount + " / 部分成功 " + partialCount + " / 失败 " + failureCount;
+        }
     }
 
     public static final class AmbiguousHeadersException extends IOException {
@@ -63,11 +90,18 @@ public class TableMerger {
     public void mergeSheetsInWorkbook(String inputFilePath, String outputFilePath,
                                       MergeStrategy strategy,
                                       ProgressListener progressListener) throws IOException {
+        mergeSheetsInWorkbookWithSummary(inputFilePath, outputFilePath, strategy, progressListener);
+    }
+
+    public MergeSummary mergeSheetsInWorkbookWithSummary(String inputFilePath, String outputFilePath,
+                                                         MergeStrategy strategy, ProgressListener progressListener)
+            throws IOException {
         File inputFile = new File(inputFilePath);
         validateReadableFile(inputFile, "输入文件");
         File outputFile = prepareOutputFile(outputFilePath);
 
         try (SafeExport export = SafeExport.begin(outputFile, inputFile)) {
+            MergeSummary summary;
             try (FileInputStream fis = new FileInputStream(inputFile);
                  Workbook inputWorkbook = WorkbookFactory.create(fis);
                  SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
@@ -76,9 +110,9 @@ public class TableMerger {
                             ? detectStrategy(collectSheetSamples(inputWorkbook)) : strategy;
                     logger.info("表格合并策略: {}", effectiveStrategy);
                     if (effectiveStrategy == MergeStrategy.WPS_STYLE_NO_HEADER) {
-                        mergeWorkbookSheetsWpsStyle(inputFile, inputWorkbook, outputWorkbook, progressListener);
+                        summary = mergeWorkbookSheetsWpsStyle(inputFile, inputWorkbook, outputWorkbook, progressListener);
                     } else {
-                        mergeWorkbookSheetsHeaderBased(inputFile, inputWorkbook, outputWorkbook, progressListener);
+                        summary = mergeWorkbookSheetsHeaderBased(inputFile, inputWorkbook, outputWorkbook, progressListener);
                     }
                     try (FileOutputStream fos = new FileOutputStream(export.temporaryFile())) {
                         outputWorkbook.write(fos);
@@ -88,6 +122,7 @@ public class TableMerger {
                 }
             }
             export.commit();
+            return summary;
         } catch (FormulaCacheException e) {
             throw e.inFile(inputFile);
         } catch (IOException e) {
@@ -109,6 +144,11 @@ public class TableMerger {
     public void mergeFiles(List<File> inputFiles, String outputFilePath,
                            MergeStrategy strategy,
                            ProgressListener progressListener) throws IOException {
+        mergeFilesWithSummary(inputFiles, outputFilePath, strategy, progressListener);
+    }
+
+    public MergeSummary mergeFilesWithSummary(List<File> inputFiles, String outputFilePath,
+                                              MergeStrategy strategy, ProgressListener progressListener) throws IOException {
         if (inputFiles == null || inputFiles.isEmpty()) {
             throw new IOException("请选择要合并的Excel文件");
         }
@@ -118,28 +158,30 @@ public class TableMerger {
             MergeStrategy effectiveStrategy = strategy == null || strategy == MergeStrategy.AUTO
                     ? detectStrategy(collectFileSamples(inputFiles)) : strategy;
             logger.info("表格合并策略: {}", effectiveStrategy);
+            MergeSummary summary;
             if (effectiveStrategy == MergeStrategy.WPS_STYLE_NO_HEADER) {
-                mergeFilesWpsStyle(inputFiles, export.temporaryFile(), progressListener);
+                summary = mergeFilesWpsStyle(inputFiles, export.temporaryFile(), progressListener);
             } else {
-                mergeFilesHeaderBased(inputFiles, export.temporaryFile(), progressListener);
+                summary = mergeFilesHeaderBased(inputFiles, export.temporaryFile(), progressListener);
             }
             export.commit();
+            return summary;
         }
     }
 
-    private void mergeWorkbookSheetsHeaderBased(File inputFile, Workbook inputWorkbook, SXSSFWorkbook outputWorkbook,
-                                                ProgressListener progressListener) throws IOException {
+    private MergeSummary mergeWorkbookSheetsHeaderBased(File inputFile, Workbook inputWorkbook, SXSSFWorkbook outputWorkbook,
+                                                        ProgressListener progressListener) throws IOException {
         HeaderMergeWriter writer = new HeaderMergeWriter(outputWorkbook);
         int total = inputWorkbook.getNumberOfSheets();
         for (int i = 0; i < total; i++) {
             processHeaderSheet(inputFile.getAbsolutePath(), inputWorkbook.getSheetAt(i), writer);
             notifyProgress(progressListener, i + 1, total);
         }
-        writer.finish();
+        return writer.finish();
     }
 
-    private void mergeFilesHeaderBased(List<File> inputFiles, File outputFile,
-                                       ProgressListener progressListener) throws IOException {
+    private MergeSummary mergeFilesHeaderBased(List<File> inputFiles, File outputFile,
+                                              ProgressListener progressListener) throws IOException {
         try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
             try {
                 HeaderMergeWriter writer = new HeaderMergeWriter(outputWorkbook);
@@ -148,10 +190,11 @@ public class TableMerger {
                     processFirstSheetHeaderBased(inputFiles.get(i), writer);
                     notifyProgress(progressListener, i + 1, total);
                 }
-                writer.finish();
+                MergeSummary summary = writer.finish();
                 try (FileOutputStream fos = new FileOutputStream(outputFile)) {
                     outputWorkbook.write(fos);
                 }
+                return summary;
             } finally {
                 outputWorkbook.dispose();
             }
@@ -197,8 +240,8 @@ public class TableMerger {
             return;
         }
 
-        Row headerRow = sourceSheet.getRow(0);
-        List<String> headers = readHeaders(headerRow);
+        Iterator<Row> rows = sourceSheet.iterator();
+        List<String> headers = readHeaders(firstHeaderRow(rows));
         if (headers.isEmpty()) {
             writer.addReport(sourceFile, sheetName, "失败", 0, 0, "未找到有效表头");
             return;
@@ -210,10 +253,12 @@ public class TableMerger {
             writer.addReport(sourceFile, sheetName, "失败", 0, 0, "与标准表头没有共同列");
             return;
         }
+        mapping.targetToSourceIndex.forEach((target, source) ->
+                widenFromSource(sourceSheet, source, writer.dataSheet, target));
         int readRows = 0;
         int mergedRows = 0;
-        for (int i = 1; i <= sourceSheet.getLastRowNum(); i++) {
-            Row row = sourceSheet.getRow(i);
+        while (rows.hasNext()) {
+            Row row = rows.next();
             if (!hasAnyCellValue(row)) {
                 continue;
             }
@@ -227,51 +272,58 @@ public class TableMerger {
         writer.addReport(sourceFile, sheetName, status, readRows, mergedRows, remark);
     }
 
-    private void mergeWorkbookSheetsWpsStyle(File inputFile, Workbook inputWorkbook, SXSSFWorkbook outputWorkbook,
-                                             ProgressListener progressListener) throws IOException {
+    private MergeSummary mergeWorkbookSheetsWpsStyle(File inputFile, Workbook inputWorkbook, SXSSFWorkbook outputWorkbook,
+                                                     ProgressListener progressListener) throws IOException {
         WpsMergeWriter writer = new WpsMergeWriter(outputWorkbook);
         int total = inputWorkbook.getNumberOfSheets();
         for (int i = 0; i < total; i++) {
             writer.processSheet(inputFile, 1, inputWorkbook.getSheetAt(i));
             notifyProgress(progressListener, i + 1, total);
         }
-        writer.finish();
+        return writer.finish();
     }
 
-    private void mergeFilesWpsStyle(List<File> inputFiles, File outputFile,
-                                    ProgressListener progressListener) throws IOException {
+    private MergeSummary mergeFilesWpsStyle(List<File> inputFiles, File outputFile,
+                                           ProgressListener progressListener) throws IOException {
         try (SXSSFWorkbook outputWorkbook = new SXSSFWorkbook(MEMORY_WINDOW_SIZE)) {
             try {
                 WpsMergeWriter writer = new WpsMergeWriter(outputWorkbook);
                 int total = inputFiles.size();
                 for (int i = 0; i < total; i++) {
-                    File inputFile = inputFiles.get(i);
-                    if (inputFile == null || !inputFile.exists() || !inputFile.canRead()) {
-                        writer.addFailure(inputFile, i + 1, "", "失败：无法读取文件");
-                    } else {
-                        try (FileInputStream fis = new FileInputStream(inputFile);
-                             Workbook workbook = WorkbookFactory.create(fis)) {
-                            if (workbook.getNumberOfSheets() == 0) {
-                                writer.addFailure(inputFile, i + 1, "", "失败：没有数据");
-                            } else {
-                                writer.processSheet(inputFile, i + 1, workbook.getSheetAt(0));
-                            }
-                        } catch (FormulaCacheException e) {
-                            throw e.inFile(inputFile);
-                        } catch (Exception e) {
-                            logger.warn("处理文件失败: {}", inputFile.getAbsolutePath(), e);
-                            writer.addFailure(inputFile, i + 1, "", "失败：" + e.getMessage());
-                        }
-                    }
+                    processFirstSheetWps(inputFiles.get(i), i + 1, writer);
                     notifyProgress(progressListener, i + 1, total);
                 }
-                writer.finish();
+                MergeSummary summary = writer.finish();
                 try (FileOutputStream fos = new FileOutputStream(outputFile)) {
                     outputWorkbook.write(fos);
                 }
+                return summary;
             } finally {
                 outputWorkbook.dispose();
             }
+        }
+    }
+
+    private void processFirstSheetWps(File inputFile, int workbookIndex, WpsMergeWriter writer) throws IOException {
+        Workbook source;
+        try {
+            validateReadableFile(inputFile, "输入文件");
+            source = WorkbookFactory.create(inputFile, null, true);
+        } catch (Exception e) {
+            logger.warn("读取文件失败: {}", inputFile, e);
+            writer.addFailure(inputFile, workbookIndex, "", "失败：" + e.getMessage());
+            return;
+        }
+        try (Workbook workbook = source) {
+            if (workbook.getNumberOfSheets() == 0) {
+                writer.addFailure(inputFile, workbookIndex, "", "失败：没有数据");
+            } else {
+                writer.processSheet(inputFile, workbookIndex, workbook.getSheetAt(0));
+            }
+        } catch (FormulaCacheException e) {
+            throw e.inFile(inputFile);
+        } catch (RuntimeException e) {
+            throw new IOException("合并文件失败：" + inputFile.getAbsolutePath() + "：" + e.getMessage(), e);
         }
     }
 
@@ -343,25 +395,37 @@ public class TableMerger {
     }
 
     private void collectSample(Sheet sheet, List<SheetSample> samples) throws FormulaCacheException {
-        SheetSample sample = null;
-        for (Row row : sheet) {
-            if (!hasAnyCellValue(row)) continue;
-            if (sample != null) {
+        Iterator<Row> rows = sheet.iterator();
+        Row first = firstHeaderRow(rows);
+        if (first == null) return;
+        SheetSample sample = new SheetSample();
+        sample.startsWithData = hasTypedData(first);
+        for (Cell cell : first) {
+            String text = readMergeCellText(cell);
+            String field = normalizeHeader(text);
+            if (!field.isEmpty()) {
+                sample.firstValues.add(field);
+                if (looksLikeDataValue(text)) sample.startsWithData = true;
+            }
+        }
+        while (rows.hasNext()) {
+            Row row = rows.next();
+            if (hasAnyCellValue(row)) {
                 sample.typedDataBelow = hasTypedData(row);
                 break;
             }
-            sample = new SheetSample();
-            sample.startsWithData = hasTypedData(row);
+        }
+        samples.add(sample);
+    }
+
+    private Row firstHeaderRow(Iterator<Row> rows) throws FormulaCacheException {
+        while (rows.hasNext()) {
+            Row row = rows.next();
             for (Cell cell : row) {
-                String text = readMergeCellText(cell);
-                String field = normalizeHeader(text);
-                if (!field.isEmpty()) {
-                    sample.firstValues.add(field);
-                    if (looksLikeDataValue(text)) sample.startsWithData = true;
-                }
+                if (!normalizeHeader(readMergeCellText(cell)).isEmpty()) return row;
             }
         }
-        if (sample != null && !sample.firstValues.isEmpty()) samples.add(sample);
+        return null;
     }
 
     private boolean hasTypedData(Row row) {
@@ -440,10 +504,9 @@ public class TableMerger {
         if (row == null || row.getLastCellNum() <= 0) {
             return false;
         }
-        for (int i = 0; i < row.getLastCellNum(); i++) {
-            Cell cell = row.getCell(i);
-            // 公式的空文本和错误结果也必须保留，不能把整行当作空行跳过。
-            if (cell != null && cell.getCellType() == CellType.FORMULA) {
+        for (Cell cell : row) {
+            // 已保存的错误值和公式的空文本结果也属于数据。
+            if (cell.getCellType() == CellType.ERROR || cell.getCellType() == CellType.FORMULA) {
                 return true;
             }
             String value = ExcelUtils.getCellValueAsString(cell);
@@ -454,7 +517,15 @@ public class TableMerger {
         return false;
     }
 
+    private static void widenFromSource(Sheet source, int sourceColumn, Sheet target, int targetColumn) {
+        int width = Math.min(source.getColumnWidth(sourceColumn), 255 * 256);
+        if (width > target.getColumnWidth(targetColumn)) target.setColumnWidth(targetColumn, width);
+    }
+
     private static String readMergeCellText(Cell cell) throws FormulaCacheException {
+        if (cell != null && cell.getCellType() == CellType.ERROR) {
+            return FormulaError.forInt(cell.getErrorCellValue()).getString();
+        }
         if (cell != null && cell.getCellType() == CellType.FORMULA) {
             CellValue result = FormulaCache.read(cell);
             if (result.getCellType() == CellType.ERROR) {
@@ -464,7 +535,12 @@ public class TableMerger {
         return ExcelUtils.getCellValueAsString(cell);
     }
 
-    private static void copyMergedCellValue(Cell source, Cell target) throws FormulaCacheException {
+    private static void copyMergedCellValue(Cell source, Cell target, Map<String, MergedNumberStyle> styles)
+            throws FormulaCacheException {
+        if (source.getCellType() == CellType.NUMERIC) {
+            writeMergedNumber(source, target, source.getNumericCellValue(), styles);
+            return;
+        }
         if (source.getCellType() != CellType.FORMULA) {
             ExcelUtils.copyCellValue(source, target);
             return;
@@ -472,7 +548,7 @@ public class TableMerger {
         CellValue value = FormulaCache.read(source);
         switch (value.getCellType()) {
             case NUMERIC:
-                target.setCellValue(value.getNumberValue());
+                writeMergedNumber(source, target, value.getNumberValue(), styles);
                 break;
             case STRING:
                 target.setCellValue(value.getStringValue());
@@ -485,6 +561,59 @@ public class TableMerger {
                 break;
             default:
                 throw new FormulaCacheException(source, null);
+        }
+    }
+
+    private static void writeMergedNumber(Cell source, Cell target, double number, Map<String, MergedNumberStyle> styles) {
+        CellStyle original = source.getCellStyle();
+        String format = original.getDataFormatString();
+        if (format != null && !"General".equalsIgnoreCase(format)) {
+            MergedNumberStyle style = styles.computeIfAbsent(format,
+                    code -> new MergedNumberStyle(target.getSheet().getWorkbook(), original.getDataFormat(), code));
+            target.setCellStyle(style.output);
+            if (style.calendarDate) {
+                Workbook input = source.getSheet().getWorkbook();
+                boolean from1904 = input instanceof Date1904Support ? ((Date1904Support) input).isDate1904()
+                        : ((HSSFWorkbook) input).getWorkbook().isUsing1904DateWindowing();
+                // 合并结果使用 1900 日期系统。直接平移天数可保留小数精度，也不涉及本机时区。
+                if (from1904) number += 1462;
+            }
+        }
+        target.setCellValue(number);
+    }
+
+    private static final class MergedNumberStyle {
+        private static final Pattern LITERALS = Pattern.compile(
+                "\"(?:[^\"\\\\]|\\\\.)*\"|\\\\.|_.|\\*.|\\[(?![hms]+\\])[^]]*]|am/pm|a/p", Pattern.CASE_INSENSITIVE);
+        private static final Pattern DATE_FIELDS = Pattern.compile("\\[[hms]+\\]|y+|d+|m+|h+|s+");
+        final CellStyle output;
+        final boolean calendarDate;
+
+        MergedNumberStyle(Workbook workbook, short inputFormatIndex, String code) {
+            output = workbook.createCellStyle();
+            output.setDataFormat(workbook.createDataFormat().getFormat(code));
+            calendarDate = isCalendarDate(inputFormatIndex, code);
+        }
+
+        private static boolean isCalendarDate(short index, String code) {
+            String fields = LITERALS.matcher(code).replaceAll("").toLowerCase(Locale.ROOT);
+            int end = fields.indexOf(';');
+            if (end >= 0) fields = fields.substring(0, end);
+            if (!DateUtil.isADateFormat(index, fields)) return false;
+            // m/mm 在小时之后或秒之前表示分钟；[h]、[m]、[s] 都表示经过的时长。
+            Matcher tokens = DATE_FIELDS.matcher(fields);
+            boolean afterHour = false;
+            boolean possibleMonth = false;
+            while (tokens.find()) {
+                String token = tokens.group();
+                boolean elapsed = token.charAt(0) == '[';
+                char field = token.charAt(elapsed ? 1 : 0);
+                if (possibleMonth && field != 's') return true;
+                if (field == 'y' || field == 'd' || (!elapsed && field == 'm' && token.length() >= 3)) return true;
+                possibleMonth = !elapsed && field == 'm' && !afterHour;
+                afterHour = field == 'h';
+            }
+            return possibleMonth;
         }
     }
 
@@ -554,6 +683,7 @@ public class TableMerger {
 
     private static class HeaderMergeWriter {
         private final SXSSFWorkbook workbook;
+        private final Map<String, MergedNumberStyle> numberStyles = new HashMap<>();
         private final Sheet dataSheet;
         private final Sheet reportSheet;
         private final List<HeaderReportEntry> reports = new ArrayList<>();
@@ -596,7 +726,7 @@ public class TableMerger {
                 }
                 Cell sourceCell = sourceRow.getCell(sourceIndex);
                 if (sourceCell != null) {
-                    copyMergedCellValue(sourceCell, outputCell);
+                    copyMergedCellValue(sourceCell, outputCell, numberStyles);
                 }
             }
         }
@@ -606,24 +736,29 @@ public class TableMerger {
             reports.add(new HeaderReportEntry(sourceFile, sheetName, status, readRows, mergedRows, remark));
         }
 
-        private void finish() throws IOException {
-            boolean hasSuccess = false;
+        private MergeSummary finish() throws IOException {
+            int successCount = 0;
+            int partialCount = 0;
             String firstFailureReason = null;
             for (HeaderReportEntry report : reports) {
-                if ("成功".equals(report.status) || "部分成功".equals(report.status)) {
-                    hasSuccess = true;
+                if ("成功".equals(report.status)) {
+                    successCount++;
+                } else if ("部分成功".equals(report.status)) {
+                    partialCount++;
                 } else if (firstFailureReason == null && report.remark != null && !report.remark.isEmpty()) {
                     firstFailureReason = report.remark;
                 }
             }
-            if (!hasSuccess) {
+            if (successCount + partialCount == 0) {
                 String reason = firstFailureReason == null ? "未找到有效表头" : firstFailureReason;
                 throw new IOException("没有成功合并的工作表: " + reason);
             }
-            writeReport();
+            MergeSummary summary = new MergeSummary(successCount, partialCount, reports.size() - successCount - partialCount);
+            writeReport(summary);
+            return summary;
         }
 
-        private void writeReport() {
+        private void writeReport(MergeSummary summary) {
             Row header = reportSheet.createRow(0);
             String[] headers = {"来源文件", "来源Sheet", "状态", "读取数据行数", "合并行数", "备注"};
             for (int i = 0; i < headers.length; i++) {
@@ -633,8 +768,6 @@ public class TableMerger {
             int rowIndex = 1;
             int totalReadRows = 0;
             int totalMergedRows = 0;
-            int successCount = 0;
-            int failCount = 0;
             for (HeaderReportEntry report : reports) {
                 Row row = reportSheet.createRow(rowIndex++);
                 row.createCell(0).setCellValue(report.sourceFile);
@@ -645,16 +778,11 @@ public class TableMerger {
                 row.createCell(5).setCellValue(report.remark == null ? "" : report.remark);
                 totalReadRows += report.readRows;
                 totalMergedRows += report.mergedRows;
-                if ("失败".equals(report.status)) {
-                    failCount++;
-                } else {
-                    successCount++;
-                }
             }
 
             Row total = reportSheet.createRow(rowIndex);
             total.createCell(0).setCellValue("总计");
-            total.createCell(2).setCellValue("成功 " + successCount + " / 失败 " + failCount);
+            total.createCell(2).setCellValue(summary.formatSummary());
             total.createCell(3).setCellValue(totalReadRows);
             total.createCell(4).setCellValue(totalMergedRows);
         }
@@ -662,6 +790,7 @@ public class TableMerger {
 
     private static class WpsMergeWriter {
         private final SXSSFWorkbook workbook;
+        private final Map<String, MergedNumberStyle> numberStyles = new HashMap<>();
         private final Sheet reportSheet;
         private final Sheet dataSheet;
         private final List<WpsReportEntry> reports = new ArrayList<>();
@@ -690,6 +819,9 @@ public class TableMerger {
 
             int startRow = dataRowIndex + 1;
             int maxSourceColumn = maxSourceColumn(rows);
+            for (int i = 0; i < maxSourceColumn; i++) {
+                widenFromSource(sourceSheet, i, dataSheet, i + 1);
+            }
             for (Row sourceRow : rows) {
                 Row outputRow = dataSheet.createRow(dataRowIndex++);
                 outputRow.createCell(0).setCellValue("[" + workbookIndex + "]" + sheetName);
@@ -697,7 +829,7 @@ public class TableMerger {
                     Cell sourceCell = sourceRow.getCell(i);
                     Cell outputCell = outputRow.createCell(i + 1);
                     if (sourceCell != null) {
-                        copyMergedCellValue(sourceCell, outputCell);
+                        copyMergedCellValue(sourceCell, outputCell, numberStyles);
                     }
                 }
             }
@@ -713,7 +845,7 @@ public class TableMerger {
             reports.add(new WpsReportEntry(fileName(inputFile), sheetName, status, ""));
         }
 
-        private void finish() throws IOException {
+        private MergeSummary finish() throws IOException {
             if (successCount == 0) {
                 String reason = reports.isEmpty() ? "没有数据" : reports.get(0).status;
                 throw new IOException("没有成功合并的工作表: " + reason);
@@ -736,6 +868,7 @@ public class TableMerger {
                 row.createCell(3).setCellValue(report.status);
                 row.createCell(4).setCellValue(report.location);
             }
+            return new MergeSummary(successCount, 0, failCount);
         }
 
         private List<Row> nonEmptyRows(Sheet sheet) {

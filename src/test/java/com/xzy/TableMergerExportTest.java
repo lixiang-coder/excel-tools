@@ -134,7 +134,10 @@ public class TableMergerExportTest {
         }
         File output = new File(temporary.getRoot(), "partial-success.xlsx");
 
-        merge(output, null);
+        TableMerger.MergeSummary summary = merge(output, null);
+        assertEquals(2, summary.getSuccessCount());
+        assertEquals(0, summary.getPartialCount());
+        assertEquals(1, summary.getFailureCount());
 
         try (Workbook workbook = WorkbookFactory.create(output)) {
             Sheet data = workbook.getSheet(headerData ? "合并数据" : "总表");
@@ -144,12 +147,45 @@ public class TableMergerExportTest {
                 assertEquals("成功", report.getRow(1).getCell(2).getStringCellValue());
                 assertEquals("失败", report.getRow(2).getCell(2).getStringCellValue());
                 assertEquals("成功", report.getRow(3).getCell(2).getStringCellValue());
-                assertEquals("成功 2 / 失败 1", report.getRow(4).getCell(2).getStringCellValue());
+                assertEquals(summary.formatSummary(), report.getRow(4).getCell(2).getStringCellValue());
             } else {
                 assertEquals("成功", report.getRow(4).getCell(3).getStringCellValue());
                 assertTrue(report.getRow(5).getCell(3).getStringCellValue().startsWith("失败"));
                 assertEquals("成功", report.getRow(6).getCell(3).getStringCellValue());
                 assertTrue(report.getRow(1).getCell(1).getStringCellValue().contains("成功合并 2 个工作表，失败 1 个"));
+            }
+        }
+        assertInputsUnchanged();
+    }
+
+    @Test
+    public void findsHeadersBelowBlankRowsAndReturnsSeparatePartialAndFailureCounts() throws Exception {
+        if (multipleFiles) inputs.add(temporary.newFile("empty.xlsx"));
+        setTableData(new Object[][] {null, {"  "}, {"编号", "姓名"}, {101, "甲"}},
+                new Object[][] {{}, null, {"编号"}, {102}}, new Object[][] {{}});
+        File output = new File(temporary.getRoot(), "leading-blank-rows.xlsx");
+
+        TableMerger.MergeSummary summary = merge(output, null);
+
+        assertEquals(1, summary.getFailureCount());
+        try (Workbook workbook = WorkbookFactory.create(output)) {
+            if (strategy == TableMerger.MergeStrategy.WPS_STYLE_NO_HEADER) {
+                assertEquals(2, summary.getSuccessCount());
+                assertEquals(0, summary.getPartialCount());
+                assertEquals(4, workbook.getSheet("总表").getPhysicalNumberOfRows());
+            } else {
+                assertEquals(1, summary.getSuccessCount());
+                assertEquals(1, summary.getPartialCount());
+                Sheet data = workbook.getSheet("合并数据");
+                assertEquals(3, data.getPhysicalNumberOfRows());
+                assertEquals("编号", data.getRow(0).getCell(0).getStringCellValue());
+                assertEquals(101, data.getRow(1).getCell(0).getNumericCellValue(), 0);
+                assertEquals(102, data.getRow(2).getCell(0).getNumericCellValue(), 0);
+                Sheet report = workbook.getSheet("合并报告");
+                assertEquals("部分成功", report.getRow(2).getCell(2).getStringCellValue());
+                assertEquals("失败", report.getRow(3).getCell(2).getStringCellValue());
+                assertEquals("成功 1 / 部分成功 1 / 失败 1", summary.formatSummary());
+                assertEquals(summary.formatSummary(), report.getRow(4).getCell(2).getStringCellValue());
             }
         }
         assertInputsUnchanged();
@@ -240,7 +276,7 @@ public class TableMergerExportTest {
                     assertEquals("失败", report.getRow(2).getCell(2).getStringCellValue());
                     assertEquals(0, report.getRow(2).getCell(4).getNumericCellValue(), 0);
                     assertTrue(report.getRow(2).getCell(5).getStringCellValue().contains("没有共同列"));
-                    assertEquals("成功 1 / 失败 1", report.getRow(3).getCell(2).getStringCellValue());
+                    assertEquals("成功 1 / 部分成功 0 / 失败 1", report.getRow(3).getCell(2).getStringCellValue());
                 }
             }
         }
@@ -307,8 +343,10 @@ public class TableMergerExportTest {
                 for (int sheetIndex = 0; sheetIndex < sheetCount; sheetIndex++) {
                     int index = multipleFiles ? fileIndex : sheetIndex;
                     Sheet sheet = workbook.createSheet("Table" + (index + 1));
-                    for (Object[] values : tables[index]) {
-                        Row row = sheet.createRow(sheet.getPhysicalNumberOfRows());
+                    for (int r = 0; r < tables[index].length; r++) {
+                        Object[] values = tables[index][r];
+                        if (values == null) continue;
+                        Row row = sheet.createRow(r);
                         for (int c = 0; c < values.length; c++) {
                             if (values[c] instanceof Number) {
                                 row.createCell(c).setCellValue(((Number) values[c]).doubleValue());
@@ -334,13 +372,12 @@ public class TableMergerExportTest {
         assertTrue(failure.getMessage().contains("injected processing failure"));
     }
 
-    private void merge(File output, TableMerger.ProgressListener listener) throws IOException {
+    private TableMerger.MergeSummary merge(File output, TableMerger.ProgressListener listener) throws IOException {
         TableMerger merger = new TableMerger();
         if (multipleFiles) {
-            merger.mergeFiles(inputs, output.getPath(), strategy, listener);
-        } else {
-            merger.mergeSheetsInWorkbook(inputs.get(0).getPath(), output.getPath(), strategy, listener);
+            return merger.mergeFilesWithSummary(inputs, output.getPath(), strategy, listener);
         }
+        return merger.mergeSheetsInWorkbookWithSummary(inputs.get(0).getPath(), output.getPath(), strategy, listener);
     }
 
     private File writeWorkbook(String name, int[] ids) throws IOException {
@@ -396,7 +433,7 @@ public class TableMergerExportTest {
             assertNotNull(report);
             if (headerData) {
                 assertEquals("编号", data.getRow(0).getCell(0).getStringCellValue());
-                assertEquals("成功 2 / 失败 0", report.getRow(3).getCell(2).getStringCellValue());
+                assertEquals("成功 2 / 部分成功 0 / 失败 0", report.getRow(3).getCell(2).getStringCellValue());
                 assertEquals(2, report.getRow(3).getCell(4).getNumericCellValue(), 0);
             } else {
                 assertEquals("[1]Sheet1", data.getRow(0).getCell(0).getStringCellValue());
